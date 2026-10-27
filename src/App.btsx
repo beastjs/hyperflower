@@ -1,0 +1,34 @@
+import { useState } from 'octane'
+
+module
+  interface Props { docsUrl: string }
+
+props { docsUrl }: Props
+setup
+  const [count, setCount] = useState(0);
+  const links = [
+    { label: 'Documentation', href: docsUrl },
+    { label: 'Octane', href: 'https://octanejs.dev' },
+    { label: 'GitHub', href: 'https://github.com/beastjs/beast' },
+  ];
+
+main.page
+  img.mark(src="/beast.svg" alt="Beast" width="28" height="28")
+
+  h1.title
+    span Build fast apps fast.
+    span.quiet Even faster with machines.
+
+  button.counter(type="button" onClick={() => setCount(count + 1)})
+    span Count
+    output(aria-live="polite") #{count}
+
+  footer.foot
+    p.hint
+      code src/App.btsx
+      span Edit and save to reload.
+    nav.links(aria-label="Resources")
+      each link in links key link.label
+        a(href={link.href} target="_blank" rel="noopener noreferrer")
+          | #{link.label}
+          span(aria-hidden="true") ↗

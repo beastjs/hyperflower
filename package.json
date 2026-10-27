@@ -1,0 +1,38 @@
+{
+  "name": "hyperflower",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsrx-tsc --noEmit",
+    "check": "bun run typecheck && bun run build",
+    "icons:build": "bun scripts/build-icons.ts --svg src/lib/icons/svg --out src/lib/icons/icons.ts",
+    "icons:check": "bun scripts/build-icons.ts --svg src/lib/icons/svg --out src/lib/icons/icons.ts --check"
+  },
+  "dependencies": {
+    "@higgsfield/client": "^0.2.6",
+    "@octanejs/base-ui": "0.1.69",
+    "@trigger.dev/sdk": "4.8.1",
+    "beast-tsrx": "0.16.0",
+    "clsx": "^2.1.1",
+    "octane": "0.16.0",
+    "tailwind-merge": "^3.6.0"
+  },
+  "devDependencies": {
+    "@beastjs/cli": "0.3.3",
+    "@beastjs/devtools": "0.1.23",
+    "@beastjs/page-builder": "0.3.0",
+    "@tailwindcss/vite": "^4.3.3",
+    "@trigger.dev/build": "4.8.1",
+    "@tsrx/oxc": "0.20.0",
+    "@tsrx/typescript-plugin": "0.6.3",
+    "@types/node": "^26.2.0",
+    "svgo": "^4.1.0",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.9.3",
+    "vite": "^8.0.16"
+  }
+}
