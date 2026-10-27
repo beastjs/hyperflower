@@ -80,7 +80,14 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     }
   }
   if (!res.ok) {
-    throw new HiggsfieldError(`Higgsfield ${init.method ?? 'GET'} ${path} failed with ${res.status}`, res.status, body)
+    const detail = typeof body === 'string' ? body : (body as { detail?: unknown } | undefined)?.detail
+    const reason = detail ? `: ${typeof detail === 'string' ? detail : JSON.stringify(detail)}` : ''
+    const endpoint = path.split('?')[0]
+    throw new HiggsfieldError(
+      `Higgsfield ${init.method ?? 'GET'} ${endpoint} failed with ${res.status}${reason}`,
+      res.status,
+      body
+    )
   }
   return body as T
 }

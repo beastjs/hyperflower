@@ -39,13 +39,16 @@ export const imageModels = {
   soulcinema: 'higgsfield-ai/soul/cinema'
 } as const
 
-type ImageInputMap = {
+export type ImageInputMap = {
   soul: SoulInput
   soulv2: SoulV2Input
   soulcinema: SoulCinemaInput
 }
 
 export type ImageModel = keyof ImageInputMap
+
+/** A model paired with its matching input, e.g. for task payloads. */
+export type ImageRequest = { [M in ImageModel]: { model: M; input: ImageInputMap[M] } }[ImageModel]
 
 export type ImageResult = { requestId: string; images: string[] }
 

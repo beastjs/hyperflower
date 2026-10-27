@@ -1,0 +1,63 @@
+module
+  import type { Job } from '@/lib/generate'
+
+  interface Props {
+    job: Job
+    onUpdate: (id: string, patch: Partial<Job>) => void
+    onAnimate: (imageUrl: string, prompt: string) => void
+  }
+
+import { useEffect } from 'octane'
+import { eventToPatch, subscribeToRun } from '@/lib/generate'
+
+props { job, onUpdate, onAnimate }: Props
+
+setup
+  const ratio = job.aspect.replace(':', ' / ')
+
+  useEffect(() => {
+    if (!job.runId || job.status !== 'pending') return
+    return subscribeToRun(job.runId, (event) => onUpdate(job.id, eventToPatch(event)))
+  }, [job.runId])
+
+article(class="group flex min-w-0 flex-col gap-3")
+  if job.status === 'done' && job.video
+    video(
+      ~ class="w-full rounded-2xl bg-sunken object-cover"
+      ~ style={{ aspectRatio: ratio }}
+      ~ src={job.video}
+      ~ controls
+      ~ autoPlay
+      ~ loop
+      ~ muted
+      ~ playsInline
+      ~ )
+  elseif job.status === 'done' && job.images
+    div(class={job.images.length > 1 ? 'grid grid-cols-2 gap-2' : 'grid'})
+      each url in job.images key url
+        figure(class="relative overflow-hidden rounded-2xl bg-sunken" style={{ aspectRatio: ratio }})
+          img(class="h-full w-full object-cover" src={url} alt={job.prompt} loading="lazy")
+          figcaption(
+            ~ class="absolute inset-x-0 bottom-0 flex justify-end gap-1.5 p-2.5 opacity-0
+            ~ transition-opacity duration-300 group-hover:opacity-100 focus-within:opacity-100"
+            ~ )
+            // Browsers block opening data: URLs in a tab, and Higgsfield needs a public URL to animate.
+            if url.startsWith('data:')
+              a.overlay-btn(href={url} download={`hyperflower-${job.id.slice(0, 8)}`}) Save
+            else
+              fragment
+                a.overlay-btn(href={url} target="_blank" rel="noreferrer") Open
+                button.overlay-btn(type="button" onClick={() => onAnimate(url, job.prompt)}) Animate
+  elseif job.status === 'error'
+    div(
+      ~ class="flex items-center justify-center rounded-2xl border border-dashed border-line p-6 text-center"
+      ~ style={{ aspectRatio: ratio }}
+      ~ )
+      p(class="max-w-xs text-sm break-words text-destructive [overflow-wrap:anywhere]") #{job.error}
+  else
+    div(class="shimmer flex items-center justify-center rounded-2xl" style={{ aspectRatio: ratio }})
+      span(class="font-mono text-2xs uppercase tracking-[0.2em] text-muted-foreground") #{job.stage}
+
+  div(class="flex items-baseline justify-between gap-4 px-1")
+    p(class="line-clamp-2 text-sm leading-snug text-foreground/80") #{job.prompt || 'Untitled'}
+    span(class="shrink-0 font-mono text-2xs uppercase tracking-wider text-muted-foreground") #{job.label}

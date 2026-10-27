@@ -63,7 +63,7 @@ export const videoModels = {
   wanReference: 'alibaba/wan-3.0/reference-to-video'
 } as const
 
-type VideoInputMap = {
+export type VideoInputMap = {
   seedanceText: SeedanceTextInput
   seedanceImage: SeedanceImageInput
   seedanceReference: SeedanceReferenceInput
@@ -71,6 +71,9 @@ type VideoInputMap = {
 }
 
 export type VideoModel = keyof VideoInputMap
+
+/** A model paired with its matching input, e.g. for task payloads. */
+export type VideoRequest = { [M in VideoModel]: { model: M; input: VideoInputMap[M] } }[VideoModel]
 
 export type VideoResult = { requestId: string; video: string }
 

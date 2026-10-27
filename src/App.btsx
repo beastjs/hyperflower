@@ -1,5 +1,181 @@
+module
+  import type { VideoModel } from '@/lib/hf'
+  import type { ImageModel } from '@/lib/generate'
+
+  type ChipOption = { value: string; label: string }
+
 import { useState } from 'octane'
+import JobCard from './components/JobCard.btsx'
+import { cn } from '@/lib/utils'
+import {
+  ~ aspectRatios,
+  ~ buildRequest,
+  ~ durations,
+  ~ imageOptions,
+  ~ resolutions,
+  ~ startGeneration,
+  ~ videoOptions,
+  ~ type Duration,
+  ~ type Job,
+  ~ type Mode,
+  ~ type Resolution
+  ~ } from '@/lib/generate'
+
+component Chips
+  props { options, value, onSelect, label }: { options: ChipOption[]; value: string; onSelect: (value: string) => void; label: string }
+  div(class="flex items-center gap-0.5 rounded-full bg-sunken p-0.5" role="radiogroup" aria-label={label})
+    each o in options key o.value
+      button(
+        ~ type="button"
+        ~ role="radio"
+        ~ aria-checked={o.value === value}
+        ~ class={cn('chip', o.value === value && 'chip-active')}
+        ~ onClick={() => onSelect(o.value)}
+        ~ ) #{o.label}
 
 props { }: {}
 
-main.page
+setup
+  const [mode, setMode] = useState<Mode>('image')
+  const [prompt, setPrompt] = useState('')
+  const [imageModel, setImageModel] = useState<ImageModel>('soulv2')
+  const [videoModel, setVideoModel] = useState<VideoModel>('seedanceText')
+  const [imageAspect, setImageAspect] = useState('3:4')
+  const [videoAspect, setVideoAspect] = useState('16:9')
+  const [resolution, setResolution] = useState<Resolution>('720p')
+  const [duration, setDuration] = useState<Duration>(5)
+  const [imageUrl, setImageUrl] = useState('')
+  const [jobs, setJobs] = useState<Job[]>([])
+  const [formError, setFormError] = useState<string>()
+
+  const image = imageOptions.find((o) => o.id === imageModel) ?? imageOptions[0]
+  const video = videoOptions.find((o) => o.id === videoModel) ?? videoOptions[0]
+  const aspect = mode === 'image' ? imageAspect : videoAspect
+  const setAspect = mode === 'image' ? setImageAspect : setVideoAspect
+  const showAspect = mode === 'image' ? !image.square : video.aspect
+  const showResolution = mode === 'video' || !image.square
+  const showImageUrl = mode === 'video' && video.image !== undefined
+  const modelOptions = mode === 'image' ? imageOptions : videoOptions
+  const toChips = (values: readonly (string | number)[], suffix = '') =>
+    values.map((v) => ({ value: String(v), label: `${v}${suffix}` }))
+
+  const updateJob = (id: string, patch: Partial<Job>) =>
+    setJobs((list) => list.map((job) => (job.id === id ? { ...job, ...patch } : job)))
+
+  const generate = async () => {
+    const request = buildRequest({ mode, prompt, imageModel, videoModel, aspect, resolution, duration, imageUrl })
+    if (typeof request === 'string') return setFormError(request)
+    setFormError(undefined)
+
+    const id = crypto.randomUUID()
+    const label = (mode === 'image' ? image.label : video.label).replace(' · Free', '')
+    // Square-only models are 1:1; image-to-video keeps the source frame's shape, so show a neutral frame.
+    const jobAspect = showAspect ? aspect : mode === 'image' ? '1:1' : '16:9'
+    setJobs((list) => [
+      { id, kind: mode, label, prompt: prompt.trim(), aspect: jobAspect, status: 'pending', stage: 'Queued' },
+      ...list
+    ])
+    try {
+      const started = await startGeneration(request)
+      updateJob(id, 'runId' in started ? { runId: started.runId } : { status: 'done', images: started.images })
+    } catch (error) {
+      updateJob(id, { status: 'error', error: (error as Error).message })
+    }
+  }
+
+  const onSubmit = (event: SubmitEvent) => {
+    event.preventDefault()
+    void generate()
+  }
+
+  const onKeyDown = (event: KeyboardEvent) => {
+    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault()
+      void generate()
+    }
+  }
+
+  const animate = (url: string, sourcePrompt: string) => {
+    setMode('video')
+    setVideoModel('seedanceImage')
+    setImageUrl(url)
+    setPrompt(sourcePrompt)
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+main(class="min-h-dvh bg-background text-foreground")
+  div(class="mx-auto flex w-full max-w-3xl flex-col gap-12 px-4 pb-24 pt-10 sm:px-6 sm:pt-20")
+    header(class="flex items-center justify-between gap-4")
+      h1(class="font-mono text-xs uppercase tracking-[0.3em] text-muted-foreground") Hyperflower
+      Chips(
+        ~ label="Mode"
+        ~ options={[{ value: 'image', label: 'Image' }, { value: 'video', label: 'Video' }]}
+        ~ value={mode}
+        ~ onSelect={(value) => setMode(value as Mode)}
+        ~ )
+
+    form(class="composer flex flex-col gap-4 rounded-3xl border border-line bg-card p-4 sm:p-5" onSubmit={onSubmit})
+      textarea(
+        ~ class="min-h-28 w-full resize-none bg-transparent text-lg leading-relaxed outline-none
+        ~ placeholder:text-muted-foreground/60"
+        ~ aria-label="Prompt"
+        ~ placeholder={mode === 'image' ? 'A quiet alpine lake at sunrise, editorial photography' : 'A slow dolly through morning fog over the lake'}
+        ~ value={prompt}
+        ~ onInput={(event) => setPrompt(event.currentTarget.value)}
+        ~ onKeyDown={onKeyDown}
+        ~ )
+
+      if showImageUrl
+        input(
+          ~ class="field"
+          ~ type="url"
+          ~ aria-label="Image URL"
+          ~ placeholder={video.image === 'required' ? 'Start frame image URL' : 'Reference image URL (optional)'}
+          ~ value={imageUrl}
+          ~ onInput={(event) => setImageUrl(event.currentTarget.value)}
+          ~ )
+
+      div(class="flex flex-wrap items-center gap-2")
+        select(
+          ~ class="field-select"
+          ~ aria-label="Model"
+          ~ value={mode === 'image' ? imageModel : videoModel}
+          ~ onChange={(event) =>
+          ~   mode === 'image'
+          ~     ? setImageModel(event.currentTarget.value as ImageModel)
+          ~     : setVideoModel(event.currentTarget.value as VideoModel)}
+          ~ )
+          each m in modelOptions key m.id
+            option(value={m.id}) #{m.label}
+        if showAspect
+          Chips(label="Aspect ratio" options={toChips(aspectRatios[mode])} value={aspect} onSelect={setAspect})
+        if showResolution
+          Chips(
+            ~ label="Resolution"
+            ~ options={toChips(resolutions)}
+            ~ value={resolution}
+            ~ onSelect={(value) => setResolution(value as Resolution)}
+            ~ )
+        if mode === 'video'
+          Chips(
+            ~ label="Duration"
+            ~ options={toChips(durations, 's')}
+            ~ value={String(duration)}
+            ~ onSelect={(value) => setDuration(Number(value) as Duration)}
+            ~ )
+        button(
+          ~ type="submit"
+          ~ class="ml-auto inline-flex h-9 items-center gap-2 rounded-full bg-primary px-5 text-sm text-primary-foreground
+          ~ transition hover:opacity-85 active:scale-[0.98]"
+          ~ ) Generate
+
+      if formError
+        p(class="px-1 text-sm text-destructive") #{formError}
+
+    if jobs.length
+      section(class="grid grid-cols-1 gap-x-5 gap-y-10 sm:grid-cols-2" aria-label="Generations")
+        each job in jobs key job.id
+          JobCard(job={job} onUpdate={updateJob} onAnimate={animate})
+    else
+      p(class="py-16 text-center font-mono text-2xs uppercase tracking-[0.25em] text-muted-foreground/70")
+        | Your generations will appear here

@@ -61,6 +61,12 @@ describe('submit', () => {
     expect(hf.calls[0].url).toBe(`${BASE}/m?hf_webhook=${encodeURIComponent('https://x.dev/hook?a=1')}`)
   })
 
+  test('keeps the webhook query out of error messages', async () => {
+    hf.reply({ status: 403, body: { detail: 'Not enough credits' } })
+    const error = await submit('m', {}, { webhookUrl: 'https://x.dev/hook' }).catch((e) => e)
+    expect(error.message).toBe('Higgsfield POST /m failed with 403: Not enough credits')
+  })
+
   test('retries 5xx, 429 and network errors with the same idempotency key', async () => {
     hf.reply({ status: 503 }, { status: 429 }, new TypeError('fetch failed'), queued('r1'))
     const res = await submit('m', {}, { retryDelay: 1 })
@@ -76,6 +82,7 @@ describe('submit', () => {
     const error = await submit('m', {}, { retryDelay: 1 }).catch((e) => e)
 
     expect(error).toBeInstanceOf(HiggsfieldError)
+    expect(error.message).toBe('Higgsfield POST /m failed with 422: bad prompt')
     expect(error.httpStatus).toBe(422)
     expect(error.body).toEqual({ detail: 'bad prompt' })
     expect(hf.calls).toHaveLength(1)
