@@ -1,0 +1,198 @@
+# Octane coverage map
+
+This map compares Beast with Octane's official [Quick start], [Core APIs],
+[TSRX vs TSX/JSX], [Differences from React], and [Build tools] documentation.
+It tracks three different concerns separately:
+
+- **Authoring syntax**: whether BTSX can express the documented TSRX shape.
+- **Runtime passthrough**: whether normal imports, setup statements,
+  attributes, and component tags can use an Octane API without Beast-specific
+  syntax.
+- **Integration coverage**: whether the repository proves the behavior in a
+  complete build or server lifecycle.
+
+Beast does not need a special grammar feature for every Octane API. Most hooks
+and components are TypeScript calls or component references, and should pass
+through `import`, `setup`, attributes, and nesting unchanged.
+
+## Covered today
+
+| Octane area | Beast coverage | Proof |
+| --- | --- | --- |
+| Components, typed props, children | Native elements, component references, source imports, typed props, and tagless local component declarations | `app`, `provider` goldens |
+| Setup and hooks | Inline TypeScript setup; `useState`, `useMemo`, and `useEffect` compile through Octane | `counter` golden |
+| Scoped child setup | `scope` emits setup-bearing or code-only nested `@{ ... }` child scopes with native Octane ownership | Scoped-child client/server compiler regression |
+| Advanced hooks | Initialized reducer/current-state getter, insertion/layout phases, effect events, generated IDs, imperative handles, stable callbacks, memoized components, debug labels, method-style custom-hook ownership, and Strong-mode Effect Event/nondeterminism diagnostics | `hooks` golden, client lowering assertions, Strong-mode regressions, and SSR assertion |
+| Module/setup source | Inline and multiline raw TypeScript, module directives, comments, blank lines, refs, and effect cleanup | `shortcut` golden |
+| Refs | Object refs, callback refs with cleanup, and optional nested arrays of refs pass through as ordinary props | `refs`, `shortcut` goldens and nested-array compiler regression |
+| Native events and attributes | Expression, string, boolean, spread, ARIA, data, class, ID, native `onInput`, form events, dialog lifecycle delegation, and distinct logical/native propagation cancellation | Goldens plus invalid nesting, dialog lifecycle, and `stopImmediatePropagation` regressions |
+| Element composition and CSS | Explicit and automatic fragments plus raw, component-scoped style blocks with `:global()` escapes | `fragment`, `styling` goldens and styling SSR assertion |
+| Linked controlled state | Strong-mode `useLinkedState` reconciles editable state by source identity | `editor` golden |
+| External stores | Stable subscription/client snapshot functions and a deterministic server snapshot pass through `useSyncExternalStore` | `network` golden and SSR assertion |
+| Responsive updates | `useTransition` marks tab changes as non-urgent while `useDeferredValue` lets search results lag behind controlled input | `responsive` golden and SSR assertion |
+| View transitions | `ViewTransition` receives named enter/exit/update classes while `addTransitionType` selects a directional class map inside `startTransition` | `transitions` golden, client preload assertion, and SSR annotation assertion |
+| Portals | A module helper passes a tagless local component and its props through `createPortal` while preserving logical event ancestry | `portal` golden, SSR placeholder assertion, and executable cross-container lifecycle |
+| Actions and forms | `useActionState` owns submission state, `useFormStatus` reads it below the form, `useOptimistic` stages a row, and `requestFormReset` resets after success | `actions` golden and SSR assertion |
+| Conditions | `if`, `elseif`, and `else` emit native `@if` arms | `card`, `status` goldens |
+| Keyed lists | Item/index bindings, explicit keys, and single-root key hoisting emit `@for` | `card`, `catalog`, `status` goldens |
+| Empty lists | An aligned `empty` branch emits native `@empty` | `catalog` golden |
+| Multi-way branches | `switch`, `case`, and `default` emit native `@switch` arms | `variant` golden |
+| Async/error boundaries | `try`, `pending`, and bound `catch` emit native boundary arms | `boundary` golden |
+| Runtime boundary components | `lazy` composes under `Suspense` and `ErrorBoundary`; Promise reads prove fulfilled and pending server paths plus the client recovery of a server-deferred rejected read; `Activity` covers visible/hidden/prerender output | `deferred`, `async` goldens, async SSR assertions, and the hydration recovery test |
+| Deferred hydration | Every activation strategy, dynamic selection, strategy/procedural prefetch, fallback/completion props, default child extraction, permanent-static ranges, server markers, and idempotent early event capture | `hydration` golden, extracted-child compile, SSR assertions, and capture test |
+| Library and resources | Element creation/cloning, descriptor and children-block checks, all five `Children` methods, six resource/connection APIs, transition pseudo-element handles, and package version | `library` golden and SSR assertions plus pseudo-element/version runtime test |
+| Fragments and text holes | Explicit and automatic output fragments, text-only lines, escaping, and interpolation | `fragment`, `styling` goldens |
+| Context | Module-scoped `createContext`, direct `Theme` provider, and local `use()`/`useContext()` consumers | `provider` golden |
+| Client ownership | Root mount/update/unmount, root-level suspension retry with committed-ref ownership, server-DOM adoption, framed primitive hydration and boolean clearing, dormant-boundary activation and event replay, responsive continuous events during pending Actions, synchronous/test scheduling, cross-container portals, and non-reconciling behavior ownership | Executable Happy DOM lifecycle suite |
+| Server and static rendering | Hydratable/static buffered output, scoped CSS/head channels, Node and Web progressive streams, await-everything output, aborts, deadlines, and complete Node preludes | Executable renderer lifecycle suite |
+| Public entry points | Every tracked name is present in the pinned `octane`, hydration, behavior, server, and static module namespaces | Machine-readable Core API inventory test |
+| Vite application lifecycle | Mixed BTSX/TSRX production build plus a BTSX SSR render, server-DOM adoption, interaction replay, and compiler-split deferred chunk | Executable project integration tests |
+| Rspack application lifecycle | Mixed BTSX/TSRX client build with a compiler-split deferred chunk plus an executable Node-target SSR render | Executable bundler integration test |
+| Rsbuild application lifecycle | Mixed compiler-only build plus routed browser and Node environments whose generated handler SSR-renders a BTSX route | Executable bundler integration tests |
+| Signals | An `octane/signals` import enables native reads in generated BTSX without a build option, `$`-suffixed names alone do not, and adapters forward only options Octane accepts | Compiler-option forwarding regressions |
+| Strong-mode render diagnostics | Ambient browser reads, reassigned module bindings, ref reads, state getters, Effect Event calls, and nondeterministic calls surface through generated TSRX | Strong-mode compiler regressions |
+| Source-map pipeline | Declaration, multiline source-body, template-node, branch, attribute, and computed-key anchors compose through Octane to original BTSX in Vite and Rspack output; valid literal less-than text reaches Octane's parser fallback | Compiler mapping/parser assertions plus emitted Vite and Rspack map tests |
+| Standalone watch lifecycle | Debounced and serialized project rebuilds, ignored output events, stale cleanup, compile-error reporting, and recovery after a valid edit | Executable project API and CLI watcher tests |
+
+Every golden output is compared byte for byte and compiled with the pinned
+Octane compiler. The focused lifecycle suites execute the non-template entry
+points, while a machine-readable inventory guards every tracked public export.
+
+## Public Core API ledger
+
+This ledger is the completion contract for Beast's Core API conformance work.
+It follows Octane's official [Core APIs] index, the hydration strategies taught
+on that page, and the public rendering functions from `octane/server` and
+`octane/static` in the pinned `octane@0.12.1` types. Compiler-emitted runtime
+helpers, metaframework RPC internals, compatibility aliases, type-only exports,
+and the `octane/signals` API are outside this stable Core API scope.
+
+| Area | API | Status | Proof |
+| --- | --- | --- | --- |
+| State | `useState` | Covered | `counter`, `responsive`, and `transitions` goldens |
+| State | `useReducer` | Covered | `hooks` initialized reducer, latest-state getter lowering, and SSR assertion |
+| State | `useLinkedState` | Covered | `editor` golden |
+| Context | `createContext`, `use(context)`, `useContext` | Covered | `provider` golden |
+| Async data | `use(Promise)` | Covered | `async` fulfilled and Suspense-pending SSR assertions plus the client ErrorBoundary recovery of a rejected read the server defers behind a fresh-native marker |
+| External state | `useSyncExternalStore` | Covered | `network` golden and SSR assertion |
+| Refs/effects | `useLazyRef`, `useLayoutSnapshot` | Covered | Server factory/initial-value behavior, client ref identity and committed DOM measurements in the 0.12/runtime suites |
+| Refs/effects | `useRef`, `useEffect` | Covered | `refs`, `shortcut`, and `counter` goldens |
+| Refs/effects | `useLayoutEffect`, `useInsertionEffect`, `useEffectEvent` | Covered | `hooks` client lowering and server no-effect assertion |
+| Refs/effects | `useId`, `useImperativeHandle` | Covered | `hooks` linked SSR ID and server-inert handle assertion |
+| Loading | `Suspense`, `ErrorBoundary`, `lazy` | Covered | `deferred` golden and client/server compilation |
+| Loading | `startTransition`, `useTransition`, `useDeferredValue` | Covered | `responsive` and `transitions` goldens with SSR |
+| Loading | `Activity` | Covered | `async` visible/hidden/prerender client lowering and SSR assertions |
+| Hydration | `Hydrate` | Covered | `hydration` complete prop surface, default extracted child, and permanent-static lowering |
+| Hydration | `load`, `idle`, `visible`, `media`, `interaction`, `condition`, `never` | Covered | `hydration` client compile and server marker assertions for every strategy plus dynamic factory |
+| Hydration | `initializeHydrationEventCapture` | Covered | Per-document capture listener idempotence test |
+| Actions | `useActionState`, `useFormStatus`, `useOptimistic`, `requestFormReset` | Covered | `actions` golden and SSR assertion |
+| Composition | `Fragment` | Covered | Automatic output in `fragment` and explicit source fragment in `styling` |
+| Composition | `memo`, `useCallback` | Covered | `hooks` memoized local summary and stable dispatch callback |
+| Composition | `useMemo` | Covered | `counter` golden |
+| Composition | `createPortal` | Covered | `portal` golden, SSR placeholder assertion, cross-container mount/unmount, and logical event bubbling |
+| View transitions | `ViewTransition`, `addTransitionType` | Covered | `transitions` golden and client/server assertions |
+| View transitions | `ViewTransitionPseudoElement` | Covered | Selector, `animate()`, and filtered `getAnimations()` runtime assertions |
+| Roots | `createRoot` | Covered | Executable mount, state update, same-component prop update, and unmount lifecycle |
+| Roots | `hydrateRoot` | Covered | Server-rendered node adoption, effect activation, event update, and unmount lifecycle |
+| Behavior roots | `attachBehaviorRoot` | Covered | Root/focused-entry parity plus externally owned range gating, adoption, events, cleanup, and DOM-preserving disposal |
+| Resources | `preload`, `preinit`, `preloadModule`, `preinitModule` | Covered | `library` client passthrough, server head emission, and dedupe assertions |
+| Resources | `preconnect`, `prefetchDNS` | Covered | `library` server head assertions |
+| Descriptors | `createElement`, `cloneElement` | Covered | `library` mapped and single cloned-descriptor SSR assertions |
+| Inspection | `isValidElement`, `isChildrenBlock`, `Children` | Covered | `library` traversal counts, flattened/mapped output, `only`, and compiled children-block assertion |
+| Scheduling/testing | `flushSync`, `act` | Covered | Synchronous DOM commit plus render/effect settling in the client lifecycle suite |
+| Debugging | `useDebugValue` | Covered | `hooks` client/server lowering assertion |
+| Package | `version` | Covered | Runtime export equals Beast's pinned Octane dependency |
+| Server | `renderToString` | Covered | Hydratable markers, resolved-boundary suspense seeds, nonce, folded/separate head channels, and existing SSR assertions |
+| Server | `renderToStaticMarkup` | Covered | Marker-free static output plus scoped CSS channel and CSP nonce assertions |
+| Server | `renderToPipeableStream`, `renderToReadableStream` | Covered | Node `pipe`/callbacks and Web `allReady` assertions with progressive Suspense output |
+| Server | `setSsrSuspenseTimeout`, `getSsrSuspenseTimeout` | Covered | Global getter/setter, per-render override, timeout, and abort assertions |
+| Static | `prerender`, `prerenderToNodeStream` | Covered | Await-everything buffered result and complete Node prelude assertions |
+
+Every public Core API row is now `Covered`. This means its committed example or
+lifecycle test is documented and passes the repository's release checks; it
+does not claim coverage for compiler-private helpers or metaframework internals.
+The inventory test also fails if any tracked name disappears from its pinned
+public entry point.
+
+## Next additions
+
+### 1. Add framework-specific adapters
+
+Vite, Rspack, and Rsbuild now cover the core bundler contracts. Add
+framework-specific adapters only where their routing or server ownership needs
+more than the normal Rsbuild application plugin.
+
+## Recommended order
+
+The remaining work is framework-specific: add adapters as concrete routing or
+server-ownership requirements emerge beyond the normal Rsbuild application
+plugin.
+
+[Quick start]: https://octanejs.dev/docs
+[Core APIs]: https://octanejs.dev/docs/core-apis
+[TSRX vs TSX/JSX]: https://octanejs.dev/docs/tsrx-vs-tsx
+[Differences from React]: https://octanejs.dev/docs/differences-from-react
+[Build tools]: https://octanejs.dev/docs/build-tools
+
+## Octane 0.3.2 regression coverage
+
+Direct context providers compile for client/server; project validation maps legacy-provider errors to BTSX. Development and production runtime tests cover restored writable textarea adoption, text-node identity across edits, current-value reset, and live signal bindings after a `satisfies`-wrapped constructor assignment. Adapter tests cover configured native attribute factories. Native browser Undo/Redo and early-binding takeover remain upstream coverage, not claims established by the DOM-emulator suite.
+
+## Octane 0.4.3 regression coverage
+
+Compiler tests cover TypeScript enums and value namespaces in `module` blocks, lowered to JavaScript for client and server and rendered through SSR. They also map TypeScript-lowering errors such as `import x = require(…)` to the authored BTSX location without the generated TSRX suffix, and check Octane's `/* @__PURE__ */` marks on `memo` and `createPortal`. Adapter tests cover Vite forwarding of `domBindingFixedProps` to a `module`-exported `"use dom bindings"` view. Independent `Hydrate` activation strategies, keyed `@for` liveness for module and host-global reads, and empty text-hole hydration remain upstream coverage.
+
+## Octane 0.6.0 regression coverage
+
+`tests/octane-0.6.test.ts` checks universal setup-bearing child scopes inside
+control flow, JSX values lowered through universal helpers, assigned style
+selector preservation, source-mapped spread-child diagnostics in both modes,
+and SSR form-capture attribute preservation. `tests/core-api.test.ts` tracks
+`captureFormSubmissions` in both public entry points. Parser-time form delivery
+and universal runtime lifecycle execution are not covered by these compiler tests.
+
+## Octane 0.7.1 regression coverage
+
+`tests/octane-0.7.test.ts` checks that `continue` inside a `scope` block and
+element children inside `textarea` fail with errors mapped to the authored BTSX
+line in both modes. It also checks that a `"use strong"` directive in `setup`
+reports `OCTANE_STRONG_DIRECTIVE_PLACEMENT`. Interpolated `textarea` text
+server-renders as one run without hydration markers, and an `Object.assign`
+compound component with `if`/`else` arms renders through SSR. The upstream
+early-exit, hydration-recovery, and universal `useOptimistic`/`useActionState`
+fixes have no BTSX-specific syntax and remain upstream coverage.
+
+## Octane 0.8.0 regression coverage
+
+`tests/octane-0.8.test.ts` verifies eleven new Strong-mode diagnostic families
+in client/server builds with authored BTSX locations, their compatibility-mode
+acceptance, and valid pure/immutable state updates with effect cleanup. It
+also covers zero-argument DOM-binding views with imported signal reads,
+boundary arms and mount-only hooks, pointermove/pointercancel strategy
+serialization, and development shell witnesses. `tests/runtime.test.ts`
+verifies shorter-branch hydration recovery in development and production,
+including one recoverable error and later updates. Since Octane 0.10 the
+regression expects the mismatched root to rebuild instead of retaining the
+server node. The hidden-dependency case now uses a reassigned module binding;
+state getters and value refs in effect setup are accepted again.
+Independent renderer-free island activation, native browser event replay,
+and universal-driver lifecycle behavior remain upstream coverage.
+
+
+## Octane 0.12.1 regression coverage
+
+`tests/octane-0.12.test.ts` covers literal `//` text and decoded entities through
+TSRX, TypeScript type erasure and constructor properties in `.ts`/`.mts`/`.cts`,
+generic superclasses and type-only re-exports in BTSX module blocks, lazy-ref
+factory execution and layout snapshot server initial values, new Strong
+ref/measurement diagnostics at authored locations, effect getter/ref acceptance,
+and finite recursive DOM-binding views compiled for both modes and SSR-rendered.
+`tests/runtime.test.ts` verifies lazy-ref identity and committed measurements,
+comment-free memo row boundaries with keyed identity across reorder/removal,
+production keyed-row props after a suspended root rollback/retry, root hydration
+fallback, and task-aware transition completion. The Core API inventory includes
+both new hooks. Vite tests verify `opaqueSignalHandles` forwarding for typed
+text holes without enabling native signal reads. Mixed Vite/Rspack/Rsbuild builds
+continue to execute against the new toolchain. Imported component shadows,
+browser restoration/island pacing, bundle-size measurements, and custom writer
+ABI lifecycles remain upstream coverage.
