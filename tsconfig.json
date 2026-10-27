@@ -10,7 +10,8 @@
     "jsx": "preserve",
     "types": [
       "vite/client",
-      "node"
+      "node",
+      "bun"
     ],
     "baseUrl": ".",
     "paths": {
