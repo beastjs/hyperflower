@@ -3,6 +3,10 @@
 //      https://developers.cloudflare.com/changelog/2026-01-15-flux-2-klein-4b-workers-ai
 // Server-side only: the API token must never reach the browser bundle.
 
+import { FLUX2_DEV_DEFAULT_STEPS, MAX_REFERENCE_IMAGES, estimateNeurons } from './pricing'
+
+export * from './pricing'
+
 export class CloudflareAIError extends Error {
   constructor(
     message: string,
@@ -33,14 +37,22 @@ export type FluxKleinInput = {
   reference_images?: string[]
 }
 
+/** Higher quality than klein but billed per step (~150 neurons per step at 1024×1024). */
+export type FluxDevInput = FluxKleinInput & {
+  /** Inference steps; defaults to FLUX2_DEV_DEFAULT_STEPS. */
+  steps?: number
+}
+
 export const cloudflareModels = {
   fluxSchnell: '@cf/black-forest-labs/flux-1-schnell',
-  flux2Klein: '@cf/black-forest-labs/flux-2-klein-4b'
+  flux2Klein: '@cf/black-forest-labs/flux-2-klein-4b',
+  flux2Dev: '@cf/black-forest-labs/flux-2-dev'
 } as const
 
 export type CloudflareInputMap = {
   fluxSchnell: FluxSchnellInput
   flux2Klein: FluxKleinInput
+  flux2Dev: FluxDevInput
 }
 
 export type CloudflareModel = keyof CloudflareInputMap
@@ -49,22 +61,6 @@ export type CloudflareModel = keyof CloudflareInputMap
 export type CloudflareRequest = {
   [M in CloudflareModel]: { model: M; input: CloudflareInputMap[M] }
 }[CloudflareModel]
-
-export const FREE_DAILY_NEURONS = 10_000
-export const MAX_REFERENCE_IMAGES = 4
-
-// Published rates per 512×512 tile and per step: https://developers.cloudflare.com/workers-ai/platform/pricing/
-const tiles = (width: number, height: number) => Math.ceil(width / 512) * Math.ceil(height / 512)
-
-/** Estimated neuron cost of one generation (schnell always renders 1024×1024). */
-export function estimateNeurons(request: CloudflareRequest): number {
-  const neurons =
-    request.model === 'fluxSchnell'
-      ? tiles(1024, 1024) * 4.8 + (request.input.steps ?? 4) * 9.6
-      : (request.input.reference_images?.length ?? 0) * 5.37 +
-        tiles(request.input.width ?? 1024, request.input.height ?? 768) * 26.05
-  return Math.round(neurons * 100) / 100
-}
 
 type RunResponse = {
   success?: boolean
@@ -91,7 +87,7 @@ const dataUrlToBlob = (dataUrl: string) => {
 }
 
 // FLUX.2 takes multipart form data, even for a prompt alone; references must be named input_image_N.
-const kleinForm = ({ reference_images = [], ...fields }: FluxKleinInput) => {
+const flux2Form = ({ reference_images = [], ...fields }: FluxKleinInput | FluxDevInput) => {
   if (reference_images.length > MAX_REFERENCE_IMAGES) {
     throw new CloudflareAIError(`At most ${MAX_REFERENCE_IMAGES} reference images are supported`)
   }
@@ -108,7 +104,9 @@ export type CloudflareImage = { image: string; neurons: number }
 /** Generate one image; returns it as a data URL with its estimated neuron cost. */
 export async function generateCloudflareImage(request: CloudflareRequest): Promise<CloudflareImage> {
   const { accountId, apiToken } = credentials()
-  const body = request.model === 'flux2Klein' ? kleinForm(request.input) : JSON.stringify(request.input)
+  // Send dev's step count explicitly so the cost estimate always matches what ran.
+  if (request.model === 'flux2Dev') request = { ...request, input: { steps: FLUX2_DEV_DEFAULT_STEPS, ...request.input } }
+  const body = request.model === 'fluxSchnell' ? JSON.stringify(request.input) : flux2Form(request.input)
   const res = await fetch(
     `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/${cloudflareModels[request.model]}`,
     {

@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { CloudflareAIError, estimateNeurons, fetchNeuronsUsedToday, generateCloudflareImage } from '.'
+import {
+  CloudflareAIError,
+  FLUX2_DEV_DEFAULT_STEPS,
+  estimateNeurons,
+  fetchNeuronsUsedToday,
+  generateCloudflareImage
+} from '.'
 
 type Call = { url: string; init: RequestInit }
 
@@ -82,19 +88,48 @@ describe('flux2Klein', () => {
   })
 })
 
+describe('flux2Dev', () => {
+  test('sends multipart with an explicit step count and prices per step', async () => {
+    reply = { body: { success: true, result: { image: '/9j/dev' } } }
+    const { neurons } = await generateCloudflareImage({
+      model: 'flux2Dev',
+      input: { prompt: 'p', width: 1024, height: 1024, reference_images: [PNG_1PX] }
+    })
+
+    expect(calls[0].url).toBe(`${RUN}/@cf/black-forest-labs/flux-2-dev`)
+    const form = calls[0].init.body as FormData
+    expect(form.get('steps')).toBe(String(FLUX2_DEV_DEFAULT_STEPS))
+    expect(form.get('input_image_0')).toBeInstanceOf(Blob)
+    // 20 steps × (1 ref tile × 18.75 + 4 output tiles × 37.5)
+    expect(neurons).toBe(3375)
+  })
+
+  test('keeps a caller-chosen step count', async () => {
+    reply = { body: { success: true, result: { image: '/9j/dev' } } }
+    const { neurons } = await generateCloudflareImage({ model: 'flux2Dev', input: { prompt: 'p', steps: 8, width: 512, height: 512 } })
+    expect((calls[0].init.body as FormData).get('steps')).toBe('8')
+    expect(neurons).toBe(300)
+  })
+})
+
 describe('estimateNeurons', () => {
   test('schnell: four 512px tiles plus 9.6 per step', () => {
-    expect(estimateNeurons({ model: 'fluxSchnell', input: { prompt: 'p' } })).toBe(57.6)
-    expect(estimateNeurons({ model: 'fluxSchnell', input: { prompt: 'p', steps: 8 } })).toBe(96)
+    expect(estimateNeurons({ model: 'fluxSchnell', input: {} })).toBe(57.6)
+    expect(estimateNeurons({ model: 'fluxSchnell', input: { steps: 8 } })).toBe(96)
   })
 
   test('klein: 26.05 per output tile plus 5.37 per reference', () => {
-    expect(estimateNeurons({ model: 'flux2Klein', input: { prompt: 'p', width: 1024, height: 1024 } })).toBe(104.2)
+    expect(estimateNeurons({ model: 'flux2Klein', input: { width: 1024, height: 1024 } })).toBe(104.2)
     // Defaults are 1024×768 → 2×2 tiles.
-    expect(estimateNeurons({ model: 'flux2Klein', input: { prompt: 'p' } })).toBe(104.2)
-    expect(
-      estimateNeurons({ model: 'flux2Klein', input: { prompt: 'p', width: 512, height: 512, reference_images: ['a', 'b'] } })
-    ).toBe(36.79)
+    expect(estimateNeurons({ model: 'flux2Klein', input: {} })).toBe(104.2)
+    expect(estimateNeurons({ model: 'flux2Klein', input: { width: 512, height: 512, reference_images: ['a', 'b'] } })).toBe(
+      36.79
+    )
+  })
+
+  test('dev: per step, 37.5 per output tile plus 18.75 per reference', () => {
+    expect(estimateNeurons({ model: 'flux2Dev', input: { width: 1024, height: 1024, steps: 10 } })).toBe(1500)
+    expect(estimateNeurons({ model: 'flux2Dev', input: {} })).toBe(FLUX2_DEV_DEFAULT_STEPS * 150)
   })
 })
 

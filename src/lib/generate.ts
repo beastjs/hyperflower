@@ -1,6 +1,7 @@
 // Browser-side helpers for the generation UI. Type-only imports keep hf/server code out of the bundle.
 import type { GenerateRequest, NeuronUsage, RunEvent } from '@/server/api'
 import type { CloudflareModel } from './cloudflare'
+import { estimateNeurons } from './cloudflare/pricing'
 import type { ImageModel as HiggsfieldImageModel, VideoModel } from './hf'
 
 export type Mode = 'image' | 'video'
@@ -16,18 +17,29 @@ export const imageOptions: {
   resolution: boolean
   /** Max reference images; omitted when the model takes none. */
   references?: number
-  /** Generated within the API request (no queue); FLUX.2 klein can take ~30s. */
+  /** Generated within the API request (no queue); FLUX.2 can take ~30s or more. */
   inline?: boolean
+  /** Selectable inference step counts; the first-listed default is FLUX2_DEV_DEFAULT_STEPS. */
+  steps?: number[]
 }[] = [
   // { id: 'soulv2', label: 'Soul V2', aspect: true, resolution: true },
   // { id: 'soul', label: 'Soul', aspect: true, resolution: true },
   // { id: 'soulcinema', label: 'Soul Cinema', aspect: true, resolution: true },
-  { id: 'fluxSchnell', label: 'CF - FLUX.1', aspect: false, resolution: false, inline: true },
-  { id: 'flux2Klein', label: 'CF - FLUX.2 klein', aspect: true, resolution: false, references: 4, inline: true }
+  { id: 'fluxSchnell', label: 'FLUX 1', aspect: false, resolution: false, inline: true },
+  { id: 'flux2Klein', label: 'FLUX 2', aspect: true, resolution: false, references: 4, inline: true }
+  // {
+  //   id: 'flux2Dev',
+  //   label: 'CF - FLUX.2 dev',
+  //   aspect: true,
+  //   resolution: false,
+  //   references: 4,
+  //   inline: true,
+  //   steps: [10, FLUX2_DEV_DEFAULT_STEPS, 30]
+  // }
 ]
 
-// FLUX.2 klein takes 256–1920px per side; every size here is 2×2 tiles (~104 neurons).
-const kleinSizes: Record<string, { width: number; height: number }> = {
+// FLUX.2 takes 256–1920px per side; every size here is 2×2 tiles (klein ~104 neurons, dev ~150 per step).
+const flux2Sizes: Record<string, { width: number; height: number }> = {
   '1:1': { width: 1024, height: 1024 },
   '3:4': { width: 768, height: 1024 },
   '9:16': { width: 576, height: 1024 },
@@ -64,6 +76,8 @@ export type Settings = {
   imageUrl: string
   /** Data URLs from toReferenceImage. */
   references: string[]
+  /** Inference steps for models that offer a choice. */
+  steps: number
 }
 
 const isUrl = (value: string) => /^https?:\/\/\S+$/.test(value)
@@ -76,10 +90,12 @@ export function buildRequest(s: Settings): GenerateRequest | string {
   if (s.mode === 'image') {
     if (!prompt) return 'Describe the image you want.'
     if (s.imageModel === 'fluxSchnell') return { kind: 'image', model: 'fluxSchnell', input: { prompt } }
-    if (s.imageModel === 'flux2Klein') {
-      const size = kleinSizes[s.aspect] ?? kleinSizes['1:1']
+    if (s.imageModel === 'flux2Klein' || s.imageModel === 'flux2Dev') {
+      const size = flux2Sizes[s.aspect] ?? flux2Sizes['1:1']
       const input = { prompt, ...size, ...(s.references.length && { reference_images: s.references }) }
-      return { kind: 'image', model: 'flux2Klein', input }
+      return s.imageModel === 'flux2Dev'
+        ? { kind: 'image', model: 'flux2Dev', input: { ...input, steps: s.steps } }
+        : { kind: 'image', model: 'flux2Klein', input }
     }
     const input = { prompt, aspect_ratio: s.aspect as never, resolution: s.resolution }
     return { kind: 'image', model: s.imageModel, input } as GenerateRequest
@@ -116,6 +132,17 @@ export function buildRequest(s: Settings): GenerateRequest | string {
         input: { prompt, duration: s.duration, resolution: s.resolution, aspect_ratio: s.aspect as never }
       }
   }
+}
+
+const isCloudflare = (request: GenerateRequest) =>
+  request.model === 'fluxSchnell' || request.model === 'flux2Klein' || request.model === 'flux2Dev'
+
+/** Neuron cost of the current settings before generating, or undefined for non-Cloudflare models. */
+export function estimateSettingsNeurons(s: Settings): number | undefined {
+  // The prompt does not affect cost; a placeholder keeps buildRequest from rejecting an empty one.
+  const request = buildRequest({ ...s, prompt: s.prompt.trim() || 'x' })
+  if (typeof request === 'string' || !isCloudflare(request)) return undefined
+  return estimateNeurons(request as Parameters<typeof estimateNeurons>[0])
 }
 
 export type Job = {

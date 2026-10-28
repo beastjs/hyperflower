@@ -12,6 +12,7 @@ import {
   ~ aspectRatios,
   ~ buildRequest,
   ~ durations,
+  ~ estimateSettingsNeurons,
   ~ fetchNeuronUsage,
   ~ formatNeurons,
   ~ imageOptions,
@@ -22,8 +23,11 @@ import {
   ~ type Duration,
   ~ type Job,
   ~ type Mode,
-  ~ type Resolution
+  ~ type Resolution,
+  ~ type Settings
   ~ } from '@/lib/generate'
+import { FLUX2_DEV_DEFAULT_STEPS } from '@/lib/cloudflare/pricing'
+import {Icon} from "@/lib/icons";
 
 component Chips
   props { options, value, onSelect, label }: { options: ChipOption[]; value: string; onSelect: (value: string) => void; label: string }
@@ -51,6 +55,7 @@ setup
   const [duration, setDuration] = useState<Duration>(5)
   const [imageUrl, setImageUrl] = useState('')
   const [references, setReferences] = useState<string[]>([])
+  const [steps, setSteps] = useState(FLUX2_DEV_DEFAULT_STEPS)
   const [jobs, setJobs] = useState<Job[]>([])
   const [formError, setFormError] = useState<string>()
   const [usage, setUsage] = useState<NeuronUsage>()
@@ -66,7 +71,23 @@ setup
   const showResolution = mode === 'video' || image.resolution
   const maxReferences = mode === 'image' ? (image.references ?? 0) : 0
   const showImageUrl = mode === 'video' && video.image !== undefined
+  const stepOptions = mode === 'image' ? image.steps : undefined
   const usedShare = usage ? Math.min(1, usage.used / usage.limit) : 0
+
+  const settings: Settings = {
+    mode,
+    prompt,
+    imageModel,
+    videoModel,
+    aspect,
+    resolution,
+    duration,
+    imageUrl,
+    references: references.slice(0, maxReferences),
+    steps
+  }
+  const cost = estimateSettingsNeurons(settings)
+  const overBudget = cost !== undefined && usage !== undefined && cost > usage.remaining
 
   const addReferences = async (event: Event) => {
     const input = event.currentTarget as HTMLInputElement
@@ -87,17 +108,7 @@ setup
     setJobs((list) => list.map((job) => (job.id === id ? { ...job, ...patch } : job)))
 
   const generate = async () => {
-    const request = buildRequest({
-      mode,
-      prompt,
-      imageModel,
-      videoModel,
-      aspect,
-      resolution,
-      duration,
-      imageUrl,
-      references: references.slice(0, maxReferences)
-    })
+    const request = buildRequest(settings)
     if (typeof request === 'string') return setFormError(request)
     setFormError(undefined)
 
@@ -147,10 +158,17 @@ setup
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
-main(class="min-h-dvh bg-background text-foreground")
-  div(class="mx-auto flex w-full max-w-3xl flex-col gap-12 px-4 pb-24 pt-10 sm:px-6 sm:pt-20")
+main(class="flex min-h-dvh bg-background text-foreground")
+  aside(className='max-w-xs flex w-full h-screen px-3 py-13')
+    div(className='text-left space-y-2 font-mono text-2xs tracking-widest')
+      p(className='space-x-1 flex items-center')
+        span(className='text-[#008EF4] text-sm leading-2') --
+        span text to image
+
+  div(class="flex w-full max-w-4xl flex-col gap-12 px-4 pb-24 pt-10 sm:px-6 sm:pt-12")
+
     header(class="flex items-center justify-between gap-4")
-      h1(class="font-mono text-xs uppercase tracking-[0.3em] text-muted-foreground") Hyperflower
+      h1(class="font-mono font-[200] text-sm uppercase tracking-[0.3em] text-[#FFF2AA]") Hyperflower
       Chips(
         ~ label="Mode"
         ~ options={[{ value: 'image', label: 'Image' }, { value: 'video', label: 'Video', disabled: true }]}
@@ -159,7 +177,7 @@ main(class="min-h-dvh bg-background text-foreground")
         ~ )
 
     if usage
-      div(class="-mt-6 flex flex-col gap-2")
+      div(class="hidden -mt-6 _flex flex-col gap-2")
         div(class="flex items-baseline justify-between gap-4 font-mono text-2xs uppercase tracking-wider text-muted-foreground")
           span
             | #{formatNeurons(usage.remaining)} neurons left today
@@ -211,17 +229,18 @@ main(class="min-h-dvh bg-background text-foreground")
                 ~ ) Remove
           if references.length < maxReferences
             label(
-              ~ class="flex h-12 cursor-pointer items-center rounded-xl border border-dashed border-line px-4 text-xs
+              ~ class="flex items-center gap-2 h-9 cursor-pointer rounded-full border border-dashed border-line px-4 text-xs
               ~ text-muted-foreground transition-colors hover:text-foreground focus-within:text-foreground"
               ~ )
-              | Add reference
+              Icon(name='plus' size={10})
+              span Add
               input(class="sr-only" type="file" accept="image/*" multiple onChange={addReferences})
-          span(class="text-2xs text-muted-foreground")
-            | Up to #{maxReferences}; refer to them as “image 1”, “image 2”…
+          span(class="text-xs text-muted-foreground")
+            | Up to #{maxReferences} reference images
 
       div(class="flex flex-wrap items-center gap-2")
         select(
-          ~ class="field-select"
+          ~ className="field-select"
           ~ aria-label="Model"
           ~ value={mode === 'image' ? imageModel : videoModel}
           ~ onChange={(event) =>
@@ -247,11 +266,25 @@ main(class="min-h-dvh bg-background text-foreground")
             ~ value={String(duration)}
             ~ onSelect={(value) => setDuration(Number(value) as Duration)}
             ~ )
-        button(
-          ~ type="submit"
-          ~ class="ml-auto inline-flex h-9 items-center gap-2 rounded-full bg-primary px-5 text-sm text-primary-foreground
-          ~ transition hover:opacity-85 active:scale-[0.98]"
-          ~ ) Generate
+        if stepOptions
+          Chips(
+            ~ label="Steps"
+            ~ options={toChips(stepOptions, ' steps')}
+            ~ value={String(steps)}
+            ~ onSelect={(value) => setSteps(Number(value))}
+            ~ )
+        div(class="ml-auto flex items-center gap-3")
+          if cost !== undefined
+            span(
+              ~ class={cn('font-mono text-[11px] uppercase tracking-wide', overBudget ? 'text-destructive' : 'text-muted-foreground')}
+              ~ title={overBudget ? 'More than the neurons left today; Cloudflare may reject or bill it' : 'Estimated neuron cost'}
+              ~ )
+              | ≈ #{formatNeurons(cost)} neurons
+          button(
+            ~ type="submit"
+            ~ class="inline-flex h-9 items-center gap-2 rounded-full bg-primary px-5 text-sm text-primary-foreground
+            ~ transition hover:opacity-85 active:scale-[0.98]"
+            ~ ) Generate
 
       if formError
         p(class="px-1 text-sm text-destructive") #{formError}
@@ -263,3 +296,14 @@ main(class="min-h-dvh bg-background text-foreground")
     else
       p(class="py-16 text-center font-mono text-2xs uppercase tracking-[0.25em] text-muted-foreground/70")
         | Your generations will appear here
+
+  aside(className='max-w-xs flex flex-col items-end w-full h-screen py-14 px-3')
+    if usage
+      div(className='text-right space-y-2 font-mono text-2xs tracking-widest')
+        p(className='space-x-1 flex items-center justify-end')
+          span(className='') #{formatNeurons(usage.remaining)}
+          span(className='text-[#00AC86] text-sm') --
+
+        p(className='space-x-1 flex items-center justify-end')
+          span(className='') #{formatNeurons(usage.used)}
+          span(className='text-[#F95B00] text-sm') --
