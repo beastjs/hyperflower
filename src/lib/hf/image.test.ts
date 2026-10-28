@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
-import { generateImage, imageModels, queueImage, type ImageModel } from './image'
+import { runPromise } from '../runtime'
+import * as image from './image'
+import { imageModels, type ImageModel } from './image'
 import { HiggsfieldError } from './client'
 import { mockHiggsfield, queued, status } from './test-helpers'
+
+const generateImage = (...args: Parameters<typeof image.generateImage>) => runPromise(image.generateImage(...args))
+const queueImage = (...args: Parameters<typeof image.queueImage>) => runPromise(image.queueImage(...args))
 
 const BASE = 'https://api.higgsfield.ai'
 

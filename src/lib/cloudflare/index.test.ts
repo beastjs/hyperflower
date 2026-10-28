@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import {
-  CloudflareAIError,
-  FLUX2_DEV_DEFAULT_STEPS,
-  estimateNeurons,
-  fetchNeuronsUsedToday,
-  generateCloudflareImage
-} from '.'
+import { runPromise } from '../runtime'
+import * as cloudflare from '.'
+import { CloudflareAIError, FLUX2_DEV_DEFAULT_STEPS, estimateNeurons } from '.'
+
+const generateCloudflareImage = (request: cloudflare.CloudflareRequest) => runPromise(cloudflare.generateCloudflareImage(request))
+const fetchNeuronsUsedToday = () => runPromise(cloudflare.fetchNeuronsUsedToday())
+// HttpClient sends JSON bodies as bytes rather than strings.
+const jsonBody = (body: unknown) => JSON.parse(typeof body === 'string' ? body : new TextDecoder().decode(body as Uint8Array))
 
 type Call = { url: string; init: RequestInit }
 
@@ -20,7 +21,7 @@ beforeEach(() => {
   process.env.CLOUDFLARE_ACCOUNT_ID = 'acct'
   process.env.CLOUDFLARE_API_TOKEN = 'token'
   globalThis.fetch = (async (url: string, init: RequestInit) => {
-    calls.push({ url, init })
+    calls.push({ url: String(url), init })
     return new Response(reply.body === undefined ? null : JSON.stringify(reply.body), { status: reply.status ?? 200 })
   }) as unknown as typeof fetch
 })
@@ -46,7 +47,7 @@ describe('fluxSchnell', () => {
     const headers = new Headers(calls[0].init.headers)
     expect(headers.get('authorization')).toBe('Bearer token')
     expect(headers.get('content-type')).toBe('application/json')
-    expect(JSON.parse(String(calls[0].init.body))).toEqual({ prompt: 'lake', steps: 4 })
+    expect(jsonBody(calls[0].init.body)).toEqual({ prompt: 'lake', steps: 4 })
   })
 
   test('detects PNG output', async () => {
@@ -169,7 +170,7 @@ describe('fetchNeuronsUsedToday', () => {
     }
     expect(await fetchNeuronsUsedToday()).toBeCloseTo(161.8)
 
-    const body = JSON.parse(String(calls[0].init.body))
+    const body = jsonBody(calls[0].init.body)
     expect(calls[0].url).toBe('https://api.cloudflare.com/client/v4/graphql')
     expect(body.variables).toEqual({ account: 'acct', date: new Date().toISOString().slice(0, 10) })
   })

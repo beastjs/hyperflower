@@ -2,95 +2,91 @@
 // Ref: https://docs.higgsfield.ai/docs/api-reference/overview
 // Server-side only: credentials must never reach the browser bundle.
 
+import { Config, Effect, Option, Redacted, Schedule, Schema } from 'effect'
+import { HttpClientRequest } from 'effect/http'
+import { execute } from '../runtime'
+
 const BASE_URL = 'https://api.higgsfield.ai'
 
-export type RequestStatus =
-  | 'queued'
-  | 'in_progress'
-  | 'completed'
-  | 'failed'
-  | 'nsfw'
-  | 'canceled'
+export const RequestStatus = Schema.Literals(['queued', 'in_progress', 'completed', 'failed', 'nsfw', 'canceled'])
+export type RequestStatus = typeof RequestStatus.Type
 
 const TERMINAL: ReadonlySet<RequestStatus> = new Set(['completed', 'failed', 'nsfw', 'canceled'])
 
-export type MediaUrl = { url: string }
+export const MediaUrl = Schema.Struct({ url: Schema.String })
+export type MediaUrl = typeof MediaUrl.Type
 
-export type QueuedRequest = {
-  status: RequestStatus
-  request_id: string
-  status_url: string
-  cancel_url: string
+export const QueuedRequest = Schema.Struct({
+  status: RequestStatus,
+  request_id: Schema.String,
+  status_url: Schema.String,
+  cancel_url: Schema.String,
   /** Seconds the request data is retained after it finishes. */
-  expires_after?: number
-}
+  expires_after: Schema.optionalKey(Schema.Number)
+})
+export type QueuedRequest = typeof QueuedRequest.Type
 
-export type RequestResult = {
-  status: RequestStatus
-  request_id: string
-  expires_at?: string
-  error?: unknown
-  images?: MediaUrl[]
-  video?: MediaUrl
-}
+export const RequestResult = Schema.Struct({
+  status: RequestStatus,
+  request_id: Schema.String,
+  expires_at: Schema.optionalKey(Schema.String),
+  error: Schema.optionalKey(Schema.Unknown),
+  images: Schema.optionalKey(Schema.Array(MediaUrl)),
+  video: Schema.optionalKey(MediaUrl)
+})
+export type RequestResult = typeof RequestResult.Type
 
-export class HiggsfieldError extends Error {
-  constructor(
-    message: string,
-    readonly httpStatus?: number,
-    readonly body?: unknown,
-    readonly result?: RequestResult
-  ) {
-    super(message)
-    this.name = 'HiggsfieldError'
-  }
-}
+export class HiggsfieldError extends Schema.TaggedError<HiggsfieldError>()('HiggsfieldError', {
+  message: Schema.String,
+  httpStatus: Schema.optional(Schema.Number),
+  body: Schema.optional(Schema.Unknown),
+  result: Schema.optional(RequestResult)
+}) {}
 
 // Accepts HF_CREDENTIALS="KEY_ID:KEY_SECRET" or the documented HF_API_KEY_ID / HF_API_KEY_SECRET pair.
-const authHeader = () => {
-  const { HF_CREDENTIALS, HF_API_KEY_ID, HF_API_KEY_SECRET } = process.env
-  const credentials =
-    HF_CREDENTIALS ?? (HF_API_KEY_ID && HF_API_KEY_SECRET ? `${HF_API_KEY_ID}:${HF_API_KEY_SECRET}` : undefined)
-  if (!credentials) {
-    throw new HiggsfieldError('Missing Higgsfield credentials: set HF_CREDENTIALS="KEY_ID:KEY_SECRET"')
-  }
-  return `Key ${credentials}`
-}
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
-
-const isRetryable = (error: unknown) =>
-  !(error instanceof HiggsfieldError) ||
-  error.httpStatus === undefined ||
-  error.httpStatus === 429 ||
-  error.httpStatus >= 500
-
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const res = await fetch(`${BASE_URL}${path}`, {
-    ...init,
-    headers: { Authorization: authHeader(), 'Content-Type': 'application/json', ...init.headers }
-  })
-  const text = await res.text()
-  let body: unknown = undefined
-  if (text) {
-    try {
-      body = JSON.parse(text)
-    } catch {
-      body = text
-    }
-  }
-  if (!res.ok) {
-    const detail = typeof body === 'string' ? body : (body as { detail?: unknown } | undefined)?.detail
-    const reason = detail ? `: ${typeof detail === 'string' ? detail : JSON.stringify(detail)}` : ''
-    const endpoint = path.split('?')[0]
-    throw new HiggsfieldError(
-      `Higgsfield ${init.method ?? 'GET'} ${endpoint} failed with ${res.status}${reason}`,
-      res.status,
-      body
+const credentials = Config.Redacted('HF_CREDENTIALS').pipe(
+  Config.orElse(() =>
+    Config.all([Config.String('HF_API_KEY_ID'), Config.Redacted('HF_API_KEY_SECRET')]).pipe(
+      Config.map(([id, secret]) => Redacted.make(`${id}:${Redacted.value(secret)}`))
     )
-  }
-  return body as T
-}
+  )
+)
+
+const authHeader = credentials.pipe(
+  Effect.map((key) => `Key ${Redacted.value(key)}`),
+  Effect.mapError(() => new HiggsfieldError({ message: 'Missing Higgsfield credentials: set HF_CREDENTIALS="KEY_ID:KEY_SECRET"' }))
+)
+
+const isRetryable = (error: HiggsfieldError) =>
+  error.httpStatus === undefined || error.httpStatus === 429 || error.httpStatus >= 500
+
+const request = <S extends Schema.Constraint>(
+  schema: S,
+  method: 'GET' | 'POST',
+  path: string,
+  options: { headers?: Record<string, string>; body?: unknown } = {}
+) =>
+  Effect.gen(function* () {
+    const endpoint = path.split('?')[0]
+    const label = `Higgsfield ${method} ${endpoint}`
+    const res = yield* HttpClientRequest.make(method)(`${BASE_URL}${path}`).pipe(
+      HttpClientRequest.setHeaders({ Authorization: yield* authHeader, 'Content-Type': 'application/json', ...options.headers }),
+      options.body === undefined ? (req) => req : HttpClientRequest.bodyJsonUnsafe(options.body),
+      execute,
+      // Network failures carry no status, so they count as retryable.
+      Effect.mapError((cause) => new HiggsfieldError({ message: `${label} failed: ${cause.message}` }))
+    )
+    if (!res.ok) {
+      const detail = typeof res.body === 'string' ? res.body : (res.body as { detail?: unknown } | undefined)?.detail
+      const reason = detail ? `: ${typeof detail === 'string' ? detail : JSON.stringify(detail)}` : ''
+      return yield* new HiggsfieldError({ message: `${label} failed with ${res.status}${reason}`, httpStatus: res.status, body: res.body })
+    }
+    return yield* Schema.decodeUnknownEffect(schema)(res.body).pipe(
+      Effect.mapError(
+        (error) => new HiggsfieldError({ message: `${label} returned an unexpected response: ${error.message}`, body: res.body })
+      )
+    )
+  })
 
 export type SubmitOptions = {
   /** Reused across retries so a timed-out submit never creates a duplicate job. */
@@ -103,71 +99,80 @@ export type SubmitOptions = {
 }
 
 /** Queue a generation and return immediately with its request id. */
-export async function submit(
+export const submit = (
   endpoint: string,
   input: object,
   { idempotencyKey = crypto.randomUUID(), webhookUrl, maxRetries = 3, retryDelay = 1000 }: SubmitOptions = {}
-): Promise<QueuedRequest> {
+) => {
   const query = webhookUrl ? `?hf_webhook=${encodeURIComponent(webhookUrl)}` : ''
-  for (let attempt = 0; ; attempt++) {
-    try {
-      return await request<QueuedRequest>(`/${endpoint}${query}`, {
-        method: 'POST',
-        headers: { 'Idempotency-Key': idempotencyKey },
-        body: JSON.stringify(input)
-      })
-    } catch (error) {
-      if (attempt >= maxRetries || !isRetryable(error)) throw error
-      await sleep(Math.min(retryDelay * 2 ** attempt, 30_000))
-    }
-  }
+  return request(QueuedRequest, 'POST', `/${endpoint}${query}`, {
+    headers: { 'Idempotency-Key': idempotencyKey },
+    body: input
+  }).pipe(
+    Effect.retry({
+      // Exponential backoff, capped at 30s between attempts.
+      schedule: Schedule.min([Schedule.exponential(retryDelay), Schedule.spaced('30 seconds')]),
+      times: maxRetries,
+      while: isRetryable
+    }),
+    Effect.withSpan('Higgsfield.submit', { attributes: { endpoint } })
+  )
 }
 
-export const getStatus = (requestId: string) => request<RequestResult>(`/requests/${requestId}/status`)
+export const getStatus = (requestId: string) => request(RequestResult, 'GET', `/requests/${requestId}/status`)
 
-/** Only queued requests can be canceled; throws (400) once processing has started. */
-export const cancel = (requestId: string) => request<void>(`/requests/${requestId}/cancel`, { method: 'POST' })
+/** Only queued requests can be canceled; fails (400) once processing has started. */
+export const cancel = (requestId: string) =>
+  request(Schema.Unknown, 'POST', `/requests/${requestId}/cancel`).pipe(Effect.asVoid)
 
 export type WaitOptions = {
   pollInterval?: number
   maxPollInterval?: number
   timeout?: number
-  signal?: AbortSignal
   onStatus?: (result: RequestResult) => void
 }
 
-/** Poll with backoff until the request reaches a terminal status. */
-export async function waitFor(
+/** Poll with backoff until the request reaches a terminal status. Interrupt the effect to stop early. */
+export const waitFor = (
   requestId: string,
-  { pollInterval = 2000, maxPollInterval = 15_000, timeout = 5 * 60_000, signal, onStatus }: WaitOptions = {}
-): Promise<RequestResult> {
-  const deadline = Date.now() + timeout
-  let interval = pollInterval
-  while (true) {
-    signal?.throwIfAborted()
-    try {
-      const result = await getStatus(requestId)
-      onStatus?.(result)
-      if (TERMINAL.has(result.status)) return result
-    } catch (error) {
-      if (!isRetryable(error)) throw error
+  { pollInterval = 2000, maxPollInterval = 15_000, timeout = 5 * 60_000, onStatus }: WaitOptions = {}
+) =>
+  Effect.gen(function* () {
+    let interval = pollInterval
+    while (true) {
+      // Transient failures (5xx, 429, network) are skipped; the next poll tries again.
+      const result = yield* getStatus(requestId).pipe(
+        Effect.map(Option.some),
+        Effect.catchIf(isRetryable, () => Effect.succeedNone)
+      )
+      if (Option.isSome(result)) {
+        onStatus?.(result.value)
+        if (TERMINAL.has(result.value.status)) return result.value
+      }
+      yield* Effect.sleep(interval)
+      interval = Math.min(interval * 1.5, maxPollInterval)
     }
-    if (Date.now() + interval > deadline) {
-      throw new HiggsfieldError(`Request ${requestId} did not finish within ${timeout}ms`)
-    }
-    await sleep(interval)
-    interval = Math.min(interval * 1.5, maxPollInterval)
-  }
-}
+  }).pipe(
+    Effect.timeoutOrElse({
+      duration: timeout,
+      orElse: () => Effect.fail(new HiggsfieldError({ message: `Request ${requestId} did not finish within ${timeout}ms` }))
+    }),
+    Effect.withSpan('Higgsfield.waitFor', { attributes: { requestId } })
+  )
 
 export type RunOptions = SubmitOptions & WaitOptions
 
-/** Submit, wait, and throw unless the request completed. */
-export async function run(endpoint: string, input: object, options: RunOptions = {}): Promise<RequestResult> {
-  const { request_id } = await submit(endpoint, input, options)
-  const result = await waitFor(request_id, options)
-  if (result.status !== 'completed') {
-    throw new HiggsfieldError(`Request ${request_id} ended with status "${result.status}"`, undefined, result.error, result)
-  }
-  return result
-}
+/** Submit, wait, and fail unless the request completed. */
+export const run = (endpoint: string, input: object, options: RunOptions = {}) =>
+  Effect.gen(function* () {
+    const { request_id } = yield* submit(endpoint, input, options)
+    const result = yield* waitFor(request_id, options)
+    if (result.status !== 'completed') {
+      return yield* new HiggsfieldError({
+        message: `Request ${request_id} ended with status "${result.status}"`,
+        body: result.error,
+        result
+      })
+    }
+    return result
+  })

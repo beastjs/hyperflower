@@ -8,8 +8,8 @@ export const FLUX2_DEV_DEFAULT_STEPS = 20
 
 type PricedRequest =
   | { model: 'fluxSchnell'; input: { steps?: number } }
-  | { model: 'flux2Klein'; input: { width?: number; height?: number; reference_images?: string[] } }
-  | { model: 'flux2Dev'; input: { width?: number; height?: number; steps?: number; reference_images?: string[] } }
+  | { model: 'flux2Klein'; input: { width?: number; height?: number; reference_images?: ReadonlyArray<string> } }
+  | { model: 'flux2Dev'; input: { width?: number; height?: number; steps?: number; reference_images?: ReadonlyArray<string> } }
 
 const tiles = (width: number, height: number) => Math.ceil(width / 512) * Math.ceil(height / 512)
 const round = (value: number) => Math.round(value * 100) / 100

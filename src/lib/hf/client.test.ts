@@ -1,6 +1,15 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { cancel, getStatus, HiggsfieldError, run, submit, waitFor } from './client'
+import { runPromise } from '../runtime'
+import * as client from './client'
+import { HiggsfieldError } from './client'
 import { mockHiggsfield, queued, status } from './test-helpers'
+
+const submit = (...args: Parameters<typeof client.submit>) => runPromise(client.submit(...args))
+const getStatus = (requestId: string) => runPromise(client.getStatus(requestId))
+const cancel = (requestId: string) => runPromise(client.cancel(requestId))
+const waitFor = (requestId: string, options?: client.WaitOptions & { signal?: AbortSignal }) =>
+  runPromise(client.waitFor(requestId, options), { signal: options?.signal })
+const run = (...args: Parameters<typeof client.run>) => runPromise(client.run(...args))
 
 const BASE = 'https://api.higgsfield.ai'
 const fast = { pollInterval: 1, maxPollInterval: 1 }
@@ -151,11 +160,17 @@ describe('waitFor', () => {
     )
   })
 
-  test('stops when the signal is aborted', async () => {
+  test('stops polling when interrupted', async () => {
+    hf.always(status('r1', 'in_progress'))
     const controller = new AbortController()
+    const polling = waitFor('r1', { pollInterval: 5, maxPollInterval: 5, signal: controller.signal })
+    await Bun.sleep(20)
     controller.abort()
-    await expect(waitFor('r1', { signal: controller.signal })).rejects.toThrow()
-    expect(hf.calls).toHaveLength(0)
+    await expect(polling).rejects.toThrow()
+
+    const polled = hf.calls.length
+    await Bun.sleep(20)
+    expect(hf.calls).toHaveLength(polled)
   })
 })
 

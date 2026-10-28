@@ -9,6 +9,9 @@ export type FetchCall = {
   body?: unknown
 }
 
+// HttpClient sends JSON bodies as bytes rather than strings.
+const bodyText = (body: BodyInit) => (typeof body === 'string' ? body : new TextDecoder().decode(body as Uint8Array))
+
 const ENV_KEYS = ['HF_CREDENTIALS', 'HF_API_KEY_ID', 'HF_API_KEY_SECRET'] as const
 
 export const mockHiggsfield = () => {
@@ -26,7 +29,7 @@ export const mockHiggsfield = () => {
       url: String(input),
       method: init?.method ?? 'GET',
       headers: Object.fromEntries(new Headers(init?.headers).entries()),
-      body: init?.body ? JSON.parse(String(init.body)) : undefined
+      body: init?.body ? JSON.parse(bodyText(init.body)) : undefined
     })
     const reply = replies.shift() ?? fallback
     if (!reply) throw new Error(`Unexpected fetch: ${input}`)

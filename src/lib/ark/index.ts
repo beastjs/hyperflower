@@ -2,29 +2,29 @@
 // Ref: https://ai.byteplus.com/ark/region:ap-southeast-1/docs/image-generation-api
 // Server-side only: the API key must never reach the browser bundle.
 
-export class ArkError extends Error {
-  constructor(
-    message: string,
-    readonly httpStatus?: number,
-    readonly body?: unknown
-  ) {
-    super(message)
-    this.name = 'ArkError'
-  }
-}
+import { Config, Effect, Option, Schema } from 'effect'
+import { HttpClientRequest } from 'effect/http'
+import { execute } from '../runtime'
+
+export class ArkError extends Schema.TaggedError<ArkError>()('ArkError', {
+  message: Schema.String,
+  httpStatus: Schema.optional(Schema.Number),
+  body: Schema.optional(Schema.Unknown)
+}) {}
 
 export const MAX_ARK_REFERENCE_IMAGES = 10
 
-export type SeedreamInput = {
-  prompt: string
+export const SeedreamInput = Schema.Struct({
+  prompt: Schema.String,
   /** "1K" | "1.5K" | "2K", or "WxH" with 921,600–4,624,220 total pixels; default "2K". */
-  size?: string
+  size: Schema.optionalKey(Schema.String),
   /** Up to 10 image URLs or base64 data URLs; the prompt can refer to them as "image 1", "image 2", … */
-  image?: string[]
-  output_format?: 'png' | 'jpeg'
+  image: Schema.optionalKey(Schema.Array(Schema.String)),
+  output_format: Schema.optionalKey(Schema.Literals(['png', 'jpeg'])),
   /** Adds an "AI generated" mark in the lower-right corner; default true. */
-  watermark?: boolean
-}
+  watermark: Schema.optionalKey(Schema.Boolean)
+})
+export type SeedreamInput = typeof SeedreamInput.Type
 
 export const arkModels = {
   seedream5Pro: 'dola-seedream-5-0-pro-260628',
@@ -34,59 +34,89 @@ export const arkModels = {
 export type ArkModel = keyof typeof arkModels
 
 /** A model paired with its matching input, e.g. for task payloads. */
-export type ArkRequest = { model: ArkModel; input: SeedreamInput }
+export const ArkRequest = Schema.Union([
+  Schema.Struct({ model: Schema.Literal('seedream5Pro'), input: SeedreamInput }),
+  Schema.Struct({ model: Schema.Literal('seedream5Flash'), input: SeedreamInput })
+])
+export type ArkRequest = typeof ArkRequest.Type
 
-type GenerationResponse = {
-  data?: { url?: string; error?: { message?: string } }[]
-  error?: { code?: string; message?: string }
-}
+const GenerationResponse = Schema.Struct({
+  data: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        url: Schema.optionalKey(Schema.String),
+        error: Schema.optionalKey(Schema.Struct({ message: Schema.optionalKey(Schema.String) }))
+      })
+    )
+  ),
+  error: Schema.optionalKey(Schema.Struct({ message: Schema.optionalKey(Schema.String) }))
+})
 
-const credentials = () => {
-  const { ARK_API_KEY: apiKey, ARK_BASE_URL: baseUrl = 'https://ark.ap-southeast.bytepluses.com/api/v3' } = process.env
-  if (!apiKey) throw new ArkError('Missing BytePlus credentials: set ARK_API_KEY')
-  return { apiKey, baseUrl: baseUrl.replace(/\/+$/, '') }
-}
+const credentials = Effect.all({
+  apiKey: Config.Redacted('ARK_API_KEY').pipe(
+    Effect.mapError(() => new ArkError({ message: 'Missing BytePlus credentials: set ARK_API_KEY' }))
+  ),
+  baseUrl: Config.String('ARK_BASE_URL').pipe(
+    Config.withDefault('https://ark.ap-southeast.bytepluses.com/api/v3'),
+    Effect.map((url) => url.replace(/\/+$/, '')),
+    Effect.orDie
+  )
+})
 
-/** Generate one image; returns its URL, which Ark keeps for 24 hours. */
-export async function generateArkImage({ model, input }: ArkRequest): Promise<string> {
-  const { apiKey, baseUrl } = credentials()
-  const { image = [], ...fields } = input
-  if (image.length > MAX_ARK_REFERENCE_IMAGES) {
-    throw new ArkError(`At most ${MAX_ARK_REFERENCE_IMAGES} reference images are supported`)
-  }
-  const res = await fetch(`${baseUrl}/images/generations`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: arkModels[model],
-      watermark: false,
-      ...fields,
-      ...(image.length && { image }),
-      response_format: 'url'
-    })
+// Lenient: a body that does not match still yields its status-based error message.
+const decodeBody = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, body: unknown): S['Type'] | undefined =>
+  Option.getOrUndefined(Schema.decodeUnknownOption(schema)(body))
+
+const arkRequest = (method: 'GET' | 'POST', path: string, body?: unknown) =>
+  Effect.gen(function* () {
+    const { apiKey, baseUrl } = yield* credentials
+    return yield* HttpClientRequest.make(method)(`${baseUrl}${path}`).pipe(
+      HttpClientRequest.bearerToken(apiKey),
+      body === undefined ? (req) => req : HttpClientRequest.bodyJsonUnsafe(body),
+      execute,
+      Effect.mapError((cause) => new ArkError({ message: `Ark ${path} failed: ${cause.message}` }))
+    )
   })
 
-  const json = (await res.json().catch(() => undefined)) as GenerationResponse | undefined
+/** Generate one image; returns its URL, which Ark keeps for 24 hours. */
+export const generateArkImage = Effect.fn('Ark.generateImage')(function* ({ model, input }: ArkRequest) {
+  const { image = [], ...fields } = input
+  if (image.length > MAX_ARK_REFERENCE_IMAGES) {
+    return yield* new ArkError({ message: `At most ${MAX_ARK_REFERENCE_IMAGES} reference images are supported` })
+  }
+  const res = yield* arkRequest('POST', '/images/generations', {
+    model: arkModels[model],
+    watermark: false,
+    ...fields,
+    ...(image.length && { image }),
+    response_format: 'url'
+  })
+  const json = decodeBody(GenerationResponse, res.body)
   const url = json?.data?.[0]?.url
   if (!res.ok || !url) {
     const reason = json?.error?.message ?? json?.data?.[0]?.error?.message
-    throw new ArkError(`Ark ${model} failed with ${res.status}${reason ? `: ${reason}` : ''}`, res.status, json)
+    return yield* new ArkError({
+      message: `Ark ${model} failed with ${res.status}${reason ? `: ${reason}` : ''}`,
+      httpStatus: res.status,
+      body: res.body
+    })
   }
   return url
-}
+})
 
-export type SeedanceInput = {
-  prompt?: string
+export const SeedanceInput = Schema.Struct({
+  prompt: Schema.optionalKey(Schema.String),
   /** Start frame, as a URL or base64 data URL; the video then keeps its aspect ratio. */
-  image_url?: string
-  resolution?: '480p' | '720p' | '1080p'
+  image_url: Schema.optionalKey(Schema.String),
+  resolution: Schema.optionalKey(Schema.Literals(['480p', '720p', '1080p'])),
   /** Ignored with a start frame, which uses "adaptive". */
-  ratio?: '16:9' | '4:3' | '1:1' | '3:4' | '9:16' | '21:9'
+  ratio: Schema.optionalKey(Schema.Literals(['16:9', '4:3', '1:1', '3:4', '9:16', '21:9'])),
   /** 2–12 seconds, default 5. */
-  duration?: number
+  duration: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 2, maximum: 12 }))),
   /** Adds an "AI generated" mark; default false here. */
-  watermark?: boolean
-}
+  watermark: Schema.optionalKey(Schema.Boolean)
+}).check(Schema.makeFilter(({ prompt, image_url }) => Boolean(prompt || image_url) || 'A prompt or start frame is required'))
+export type SeedanceInput = typeof SeedanceInput.Type
 
 export const arkVideoModels = {
   seedanceFast: 'seedance-1-0-pro-fast-251015'
@@ -94,54 +124,67 @@ export const arkVideoModels = {
 
 export type ArkVideoModel = keyof typeof arkVideoModels
 
-export type ArkVideoRequest = { model: ArkVideoModel; input: SeedanceInput }
+export const ArkVideoRequest = Schema.Struct({ model: Schema.Literal('seedanceFast'), input: SeedanceInput })
+export type ArkVideoRequest = typeof ArkVideoRequest.Type
 
-type VideoTask = {
-  id?: string
-  status?: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'expired'
-  content?: { video_url?: string }
-  error?: { code?: string; message?: string }
-}
+const VideoTask = Schema.Struct({
+  id: Schema.optionalKey(Schema.String),
+  status: Schema.optionalKey(Schema.Literals(['queued', 'running', 'succeeded', 'failed', 'cancelled', 'expired'])),
+  content: Schema.optionalKey(Schema.Struct({ video_url: Schema.optionalKey(Schema.String) })),
+  error: Schema.optionalKey(Schema.Struct({ message: Schema.optionalKey(Schema.String) }))
+})
 
-const arkFetch = async (path: string, init?: RequestInit) => {
-  const { apiKey, baseUrl } = credentials()
-  const res = await fetch(`${baseUrl}${path}`, {
-    ...init,
-    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }
+const taskRequest = (method: 'GET' | 'POST', path: string, body?: unknown) =>
+  Effect.gen(function* () {
+    const res = yield* arkRequest(method, path, body)
+    const json = decodeBody(VideoTask, res.body)
+    if (!res.ok) {
+      const reason = json?.error?.message
+      return yield* new ArkError({
+        message: `Ark ${path} failed with ${res.status}${reason ? `: ${reason}` : ''}`,
+        httpStatus: res.status,
+        body: res.body
+      })
+    }
+    return json ?? {}
   })
-  const json = (await res.json().catch(() => undefined)) as VideoTask | undefined
-  if (!res.ok) {
-    const reason = json?.error?.message
-    throw new ArkError(`Ark ${path} failed with ${res.status}${reason ? `: ${reason}` : ''}`, res.status, json)
-  }
-  return json ?? {}
-}
 
 /** Generate one video, polling the task until it finishes; returns its URL, which Ark keeps for 24 hours. */
-export async function generateArkVideo(
+export const generateArkVideo = (
   { model, input }: ArkVideoRequest,
   { interval = 3_000, timeout = 10 * 60_000 } = {}
-): Promise<string> {
-  const { prompt, image_url, ratio, watermark = false, ...fields } = input
-  if (!prompt && !image_url) throw new ArkError('A prompt or start frame is required')
-  const content = [
-    ...(prompt ? [{ type: 'text', text: prompt }] : []),
-    ...(image_url ? [{ type: 'image_url', image_url: { url: image_url }, role: 'first_frame' }] : [])
-  ]
-  const { id } = await arkFetch('/contents/generations/tasks', {
-    method: 'POST',
-    body: JSON.stringify({ model: arkVideoModels[model], content, ratio: image_url ? 'adaptive' : ratio, watermark, ...fields })
-  })
-  if (!id) throw new ArkError(`Ark ${model} returned no task id`)
+) =>
+  Effect.gen(function* () {
+    const { prompt, image_url, ratio, watermark = false, ...fields } = input
+    if (!prompt && !image_url) return yield* new ArkError({ message: 'A prompt or start frame is required' })
+    const content = [
+      ...(prompt ? [{ type: 'text', text: prompt }] : []),
+      ...(image_url ? [{ type: 'image_url', image_url: { url: image_url }, role: 'first_frame' }] : [])
+    ]
+    const { id } = yield* taskRequest('POST', '/contents/generations/tasks', {
+      model: arkVideoModels[model],
+      content,
+      ratio: image_url ? 'adaptive' : ratio,
+      watermark,
+      ...fields
+    })
+    if (!id) return yield* new ArkError({ message: `Ark ${model} returned no task id` })
 
-  for (const deadline = Date.now() + timeout; Date.now() < deadline; ) {
-    await new Promise((resolve) => setTimeout(resolve, interval))
-    const task = await arkFetch(`/contents/generations/tasks/${encodeURIComponent(id)}`)
-    if (task.status === 'succeeded' && task.content?.video_url) return task.content.video_url
-    if (task.status && !['queued', 'running'].includes(task.status)) {
-      const reason = task.error?.message
-      throw new ArkError(`Ark ${model} task ${task.status}${reason ? `: ${reason}` : ''}`, undefined, task)
-    }
-  }
-  throw new ArkError(`Ark ${model} task ${id} timed out`)
-}
+    const poll = Effect.gen(function* () {
+      while (true) {
+        yield* Effect.sleep(interval)
+        const task = yield* taskRequest('GET', `/contents/generations/tasks/${encodeURIComponent(id)}`)
+        if (task.status === 'succeeded' && task.content?.video_url) return task.content.video_url
+        if (task.status && task.status !== 'queued' && task.status !== 'running') {
+          const reason = task.error?.message
+          return yield* new ArkError({ message: `Ark ${model} task ${task.status}${reason ? `: ${reason}` : ''}`, body: task })
+        }
+      }
+    })
+    return yield* poll.pipe(
+      Effect.timeoutOrElse({
+        duration: timeout,
+        orElse: () => Effect.fail(new ArkError({ message: `Ark ${model} task ${id} timed out` }))
+      })
+    )
+  }).pipe(Effect.withSpan('Ark.generateVideo', { attributes: { model } }))

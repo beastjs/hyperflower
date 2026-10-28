@@ -4,25 +4,32 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { runs, tasks } from '@trigger.dev/sdk'
+import { Cause, Config, Effect, Layer, ManagedRuntime, Schema, Stream, Tuple } from 'effect'
 import {
   ArkError,
+  ArkRequest,
+  ArkVideoRequest,
   arkModels,
   arkVideoModels,
   generateArkImage,
-  generateArkVideo,
-  type ArkRequest,
-  type ArkVideoRequest
+  generateArkVideo
 } from '../lib/ark'
-import { CloudflareAIError, cloudflareModels, generateCloudflareImage, type CloudflareRequest } from '../lib/cloudflare'
-import { imageModels, videoModels, type ImageRequest, type VideoRequest } from '../lib/hf'
+import { CloudflareAIError, CloudflareRequest, cloudflareModels, generateCloudflareImage } from '../lib/cloudflare'
+import { HiggsfieldError, ImageRequest, VideoRequest, imageModels, videoModels } from '../lib/hf'
+import { BaseLayer } from '../lib/runtime'
 import type { GenerationStage, imageTask, videoTask } from '../trigger/generate'
-import { getNeuronUsage, recordNeurons } from './neurons'
+import { NeuronLedger } from './neurons'
 
 export type { NeuronUsage } from './neurons'
 
-export type GenerateRequest =
-  | ({ kind: 'image' } & (ImageRequest | CloudflareRequest | ArkRequest))
-  | ({ kind: 'video' } & (VideoRequest | ArkVideoRequest))
+const withKind = <K extends string>(kind: K) => Tuple.map(Schema.fieldsAssign({ kind: Schema.Literal(kind) }))
+
+/** The POST /api/generate body: a model, its input, and whether it makes an image or a video. */
+export const GenerateRequest = Schema.Union([
+  Schema.Union([...ImageRequest.members, ...CloudflareRequest.members, ...ArkRequest.members]).mapMembers(withKind('image')),
+  Schema.Union([...VideoRequest.members, ArkVideoRequest]).mapMembers(withKind('video'))
+])
+export type GenerateRequest = typeof GenerateRequest.Type
 
 export type RunEvent = {
   status: string
@@ -33,117 +40,195 @@ export type RunEvent = {
   video?: string
 }
 
-type Next = (error?: unknown) => void
+class BadRequest extends Schema.TaggedError<BadRequest>()('BadRequest', { message: Schema.String }) {}
 
-const json = (res: ServerResponse, status: number, body: unknown) => {
-  res.writeHead(status, { 'Content-Type': 'application/json' })
-  res.end(JSON.stringify(body))
+class TriggerError extends Schema.TaggedError<TriggerError>()('TriggerError', {
+  message: Schema.String,
+  cause: Schema.optional(Schema.Defect())
+}) {}
+
+type Reply = { status: number; body: unknown }
+
+const AppLayer = NeuronLedger.layer().pipe(Layer.provideMerge(BaseLayer))
+const runtime = ManagedRuntime.make(AppLayer)
+
+const modelNames = (...models: object[]) => models.flatMap(Object.keys)
+
+// Checked before the full request so a wrong kind or model gets a short message,
+// rather than one listing every member of GenerateRequest.
+const Envelope = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal('image'),
+    model: Schema.Literals(modelNames(imageModels, cloudflareModels, arkModels)).annotate({ message: 'Unknown image model' })
+  }),
+  Schema.Struct({
+    kind: Schema.Literal('video'),
+    model: Schema.Literals(modelNames(videoModels, arkVideoModels)).annotate({ message: 'Unknown video model' })
+  })
+]).annotate({ message: 'kind must be "image" or "video"' })
+
+const decodeGenerateRequest = (body: string) =>
+  Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(body).pipe(
+    Effect.tap(Schema.decodeUnknownEffect(Envelope)),
+    Effect.flatMap(Schema.decodeUnknownEffect(GenerateRequest)),
+    Effect.mapError((error) => new BadRequest({ message: error.message }))
+  )
+
+const readBody = (req: IncomingMessage) =>
+  Effect.tryPromise({
+    try: async () => {
+      let raw = ''
+      for await (const chunk of req) raw += chunk
+      return raw
+    },
+    catch: () => new BadRequest({ message: 'Could not read the request body' })
+  })
+
+// Provider errors keep their 4xx status; anything upstream that broke is a 502.
+const errorReply = (error: BadRequest | TriggerError | ArkError | CloudflareAIError | HiggsfieldError): Reply => {
+  switch (error._tag) {
+    case 'BadRequest':
+      return { status: 400, body: { error: error.message } }
+    case 'TriggerError':
+      return { status: 500, body: { error: error.message } }
+    default: {
+      const status = error.httpStatus && error.httpStatus < 500 ? error.httpStatus : 502
+      return { status, body: { error: error.message } }
+    }
+  }
 }
 
-const readJson = async (req: IncomingMessage): Promise<unknown> => {
-  let raw = ''
-  for await (const chunk of req) raw += chunk
-  return JSON.parse(raw)
-}
-
-const parseRequest = (body: unknown): GenerateRequest | string => {
-  if (typeof body !== 'object' || body === null) return 'Expected a JSON object'
-  const { kind, model, input } = body as Record<string, unknown>
-  const models = kind === 'image' ? { ...imageModels, ...cloudflareModels, ...arkModels } : kind === 'video' ? { ...videoModels, ...arkVideoModels } : undefined
-  if (!models) return 'kind must be "image" or "video"'
-  if (typeof model !== 'string' || !(model in models)) return `Unknown ${kind} model`
-  if (typeof input !== 'object' || input === null) return 'input must be an object'
-  return { kind, model, input } as GenerateRequest
-}
+const triggerTask = (request: ImageRequest | VideoRequest, kind: 'image' | 'video') =>
+  Effect.gen(function* () {
+    yield* Config.Redacted('TRIGGER_SECRET_KEY').pipe(
+      Effect.mapError(
+        () =>
+          new TriggerError({
+            message:
+              'TRIGGER_SECRET_KEY is not set. Add it to .env (self-hosted: also TRIGGER_API_URL) and the dev server will reload.'
+          })
+      )
+    )
+    const trigger = (): Promise<{ id: string }> =>
+      kind === 'video'
+        ? tasks.trigger<typeof videoTask>('generate-video', request as VideoRequest)
+        : tasks.trigger<typeof imageTask>('generate-image', request as ImageRequest)
+    const handle = yield* Effect.tryPromise({
+      try: trigger,
+      catch: (cause) =>
+        new TriggerError({ message: cause instanceof Error ? cause.message : `Could not start the ${kind} run`, cause })
+    })
+    return { status: 202, body: { runId: handle.id } } satisfies Reply
+  })
 
 // Workers AI and Ark are called inline: a background run would add latency, and Workers AI's
 // image bytes are too large for task storage. Ark video holds the request open while it polls.
-async function generateInline(
-  run: () => Promise<{ images: string[]; neurons?: number } | { video: string }>,
-  res: ServerResponse
-) {
-  try {
-    json(res, 200, await run())
-  } catch (error) {
-    const status = (error instanceof CloudflareAIError || error instanceof ArkError) && error.httpStatus ? error.httpStatus : 502
-    json(res, status >= 500 ? 502 : status, { error: (error as Error).message })
+const generate = Effect.fn('api.generate')(function* (req: IncomingMessage) {
+  const body = yield* readBody(req)
+  const { kind, ...request } = yield* decodeGenerateRequest(body)
+
+  if (Schema.is(CloudflareRequest)(request)) {
+    const { image, neurons } = yield* generateCloudflareImage(request)
+    const ledger = yield* NeuronLedger
+    // The image is already paid for, so a ledger write failure must not lose it.
+    yield* ledger.record(neurons).pipe(Effect.catchTag('LedgerError', (error) => Effect.logWarning(error.message, error.cause)))
+    return { status: 200, body: { images: [image], neurons } } satisfies Reply
+  }
+  if (Schema.is(ArkRequest)(request)) {
+    return { status: 200, body: { images: [yield* generateArkImage(request)] } } satisfies Reply
+  }
+  if (Schema.is(ArkVideoRequest)(request)) {
+    return { status: 200, body: { video: yield* generateArkVideo(request) } } satisfies Reply
+  }
+  return yield* triggerTask(request, kind)
+})
+
+const usage = Effect.gen(function* () {
+  const ledger = yield* NeuronLedger
+  return { status: 200, body: yield* ledger.usage } satisfies Reply
+})
+
+const toRunEvent = (run: {
+  status: string
+  isCompleted: boolean
+  isSuccess: boolean
+  error?: { message?: string }
+  output?: unknown
+  metadata?: Record<string, unknown>
+}): RunEvent => {
+  const output = run.output as { images?: string[]; video?: string } | undefined
+  return {
+    status: run.status,
+    stage: run.metadata?.stage as GenerationStage | undefined,
+    done: run.isCompleted,
+    error: run.isCompleted && !run.isSuccess ? (run.error?.message ?? `Run ${run.status.toLowerCase()}`) : undefined,
+    images: output?.images,
+    video: output?.video
   }
 }
 
-async function generate(req: IncomingMessage, res: ServerResponse) {
-  const parsed = parseRequest(await readJson(req).catch(() => undefined))
-  if (typeof parsed === 'string') return json(res, 400, { error: parsed })
-
-  const { kind, ...payload } = parsed
-  if (kind === 'image' && payload.model in cloudflareModels) {
-    return generateInline(async () => {
-      const { image, neurons } = await generateCloudflareImage(payload as CloudflareRequest)
-      await recordNeurons(neurons)
-      return { images: [image], neurons }
-    }, res)
-  }
-  if (kind === 'image' && payload.model in arkModels) {
-    return generateInline(async () => ({ images: [await generateArkImage(payload as ArkRequest)] }), res)
-  }
-  if (kind === 'video' && payload.model in arkVideoModels) {
-    return generateInline(async () => ({ video: await generateArkVideo(payload as ArkVideoRequest) }), res)
-  }
-
-  if (!process.env.TRIGGER_SECRET_KEY) {
-    return json(res, 500, {
-      error:
-        'TRIGGER_SECRET_KEY is not set. Add it to .env (self-hosted: also TRIGGER_API_URL) and the dev server will reload.'
-    })
-  }
-
-  const handle =
-    kind === 'video'
-      ? await tasks.trigger<typeof videoTask>('generate-video', payload as VideoRequest)
-      : await tasks.trigger<typeof imageTask>('generate-image', payload as ImageRequest)
-  json(res, 202, { runId: handle.id })
+// Interrupting the fiber (the browser disconnected) ends the subscription without an error event.
+const streamRun = (runId: string, res: ServerResponse) => {
+  const send = (event: RunEvent) => Effect.sync(() => res.write(`data: ${JSON.stringify(event)}\n\n`))
+  return Effect.sync(() =>
+    res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' })
+  ).pipe(
+    Effect.andThen(
+      Stream.fromAsyncIterable(
+        runs.subscribeToRun<typeof imageTask | typeof videoTask>(runId, { skipColumns: ['payload'] }),
+        (cause) => new TriggerError({ message: cause instanceof Error ? cause.message : String(cause), cause })
+      ).pipe(Stream.runForEach((run) => send(toRunEvent(run))))
+    ),
+    Effect.catchTag('TriggerError', (error) => send({ status: 'ERROR', done: true, error: error.message })),
+    Effect.ensuring(Effect.sync(() => res.end())),
+    Effect.withSpan('api.streamRun', { attributes: { runId } })
+  )
 }
 
-async function streamRun(runId: string, req: IncomingMessage, res: ServerResponse) {
-  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' })
-  const controller = new AbortController()
-  req.on('close', () => controller.abort())
+const json = (res: ServerResponse, { status, body }: Reply) =>
+  Effect.sync(() => {
+    res.writeHead(status, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify(body))
+  })
 
-  try {
-    const subscription = runs.subscribeToRun<typeof imageTask | typeof videoTask>(runId, {
-      skipColumns: ['payload'],
-      signal: controller.signal
-    })
-    for await (const run of subscription) {
-      const output = run.output as { images?: string[]; video?: string } | undefined
-      const event: RunEvent = {
-        status: run.status,
-        stage: run.metadata?.stage as GenerationStage | undefined,
-        done: run.isCompleted,
-        error: run.isCompleted && !run.isSuccess ? (run.error?.message ?? `Run ${run.status.toLowerCase()}`) : undefined,
-        images: output?.images,
-        video: output?.video
-      }
-      res.write(`data: ${JSON.stringify(event)}\n\n`)
-    }
-  } catch (error) {
-    if (!controller.signal.aborted) {
-      const event: RunEvent = { status: 'ERROR', done: true, error: (error as Error).message }
-      res.write(`data: ${JSON.stringify(event)}\n\n`)
-    }
-  }
-  res.end()
-}
+const reply = <R>(res: ServerResponse, handler: Effect.Effect<Reply, Parameters<typeof errorReply>[0], R>) =>
+  handler.pipe(
+    Effect.catch((error) => Effect.succeed(errorReply(error))),
+    Effect.flatMap((result) => json(res, result))
+  )
+
+type Next = (error?: unknown) => void
 
 export async function apiMiddleware(req: IncomingMessage, res: ServerResponse, next: Next) {
   const url = new URL(req.url ?? '/', 'http://localhost')
-  try {
-    if (req.method === 'POST' && url.pathname === '/api/generate') return await generate(req, res)
-    if (req.method === 'GET' && url.pathname === '/api/usage/neurons') return json(res, 200, await getNeuronUsage())
-    const match = url.pathname.match(/^\/api\/runs\/([\w-]+)\/events$/)
-    if (req.method === 'GET' && match) return await streamRun(match[1], req, res)
-  } catch (error) {
-    if (!res.headersSent) return json(res, 500, { error: (error as Error).message })
-    return res.end()
-  }
-  next()
+  const match = url.pathname.match(/^\/api\/runs\/([\w-]+)\/events$/)
+  const route =
+    req.method === 'POST' && url.pathname === '/api/generate'
+      ? reply(res, generate(req))
+      : req.method === 'GET' && url.pathname === '/api/usage/neurons'
+        ? reply(res, usage)
+        : req.method === 'GET' && match
+          ? streamRun(match[1], res)
+          : undefined
+  if (!route) return next()
+
+  // 'close' before the reply is sent means the browser went away; stop the work it asked for.
+  const controller = new AbortController()
+  res.on('close', () => controller.abort())
+  await runtime.runPromise(
+    route.pipe(
+      // Defects (bugs, unexpected throws) still answer the request.
+      Effect.catchCause((cause) =>
+        Effect.sync(() => {
+          if (Cause.hasInterruptsOnly(cause)) return
+          if (!res.headersSent) {
+            res.writeHead(500, { 'Content-Type': 'application/json' })
+            const error = Cause.squash(cause)
+            res.end(JSON.stringify({ error: error instanceof Error ? error.message : 'Internal error' }))
+          } else res.end()
+        })
+      )
+    ),
+    { signal: controller.signal }
+  ).catch(() => {})
 }

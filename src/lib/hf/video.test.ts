@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
-import { generateVideo, queueVideo, videoModels } from './video'
+import { runPromise } from '../runtime'
+import * as video from './video'
+import { videoModels } from './video'
 import { HiggsfieldError } from './client'
 import { mockHiggsfield, queued, status } from './test-helpers'
+
+const generateVideo = (...args: Parameters<typeof video.generateVideo>) => runPromise(video.generateVideo(...args))
+const queueVideo = (...args: Parameters<typeof video.queueVideo>) => runPromise(video.queueVideo(...args))
 
 const BASE = 'https://api.higgsfield.ai'
 
@@ -53,7 +58,7 @@ test('seedanceReference requires at least one reference', async () => {
   await expect(generateVideo('seedanceReference', { prompt: 'p', image_urls: [] })).rejects.toThrow(
     'needs at least one of'
   )
-  expect(() => queueVideo('seedanceReference', { prompt: 'p' })).toThrow(HiggsfieldError)
+  await expect(queueVideo('seedanceReference', { prompt: 'p' })).rejects.toBeInstanceOf(HiggsfieldError)
   expect(hf.calls).toHaveLength(0)
 })
 
