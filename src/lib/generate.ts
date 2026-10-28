@@ -1,11 +1,11 @@
 // Browser-side helpers for the generation UI. Type-only imports keep hf/server code out of the bundle.
 import type { GenerateRequest, NeuronUsage, RunEvent } from '@/server/api'
-import type { ArkModel, ArkVideoModel } from './ark'
+import type { Ark3DModel, ArkModel, ArkVideoModel, Model3D, Model3DFormat } from './ark'
 import type { CloudflareModel } from './cloudflare'
 import { estimateNeurons } from './cloudflare/pricing'
 import type { ImageModel as HiggsfieldImageModel, VideoModel as HiggsfieldVideoModel } from './hf'
 
-export type Mode = 'image' | 'video'
+export type Mode = 'image' | 'video' | '3d'
 export type Resolution = '720p' | '1080p'
 export type Duration = 5 | 10
 export type ImageModel = HiggsfieldImageModel | CloudflareModel | ArkModel
@@ -72,7 +72,20 @@ export const videoOptions: {
   { id: 'wanReference', label: 'Wan 3.0', aspect: true, image: 'optional' }
 ]
 
-export const aspectRatios: Record<Mode, string[]> = {
+export const model3dOptions: {
+  id: Ark3DModel
+  label: string
+  /** Photos of one object, in the order of `views`. */
+  references: number
+}[] = [{ id: 'hitem3d', label: 'Hitem3D 2.0', references: 4 }]
+
+/** Hitem3D reads its reference photos in this order. */
+export const views3d = ['Front', 'Back', 'Left', 'Right']
+export const resolutions3d = ['1536', '1536pro'] as const
+export type Resolution3D = (typeof resolutions3d)[number]
+export const formats3d: Model3DFormat[] = ['glb', 'obj', 'fbx', 'usdz', 'stl']
+
+export const aspectRatios: Record<Exclude<Mode, '3d'>, string[]> = {
   image: ['1:1', '3:4', '9:16', '16:9'],
   video: ['16:9', '9:16', '1:1']
 }
@@ -93,6 +106,11 @@ export type Settings = {
   references: string[]
   /** Inference steps for models that offer a choice. */
   steps: number
+  model3d: Ark3DModel
+  resolution3d: Resolution3D
+  /** Textured model, or geometry only. */
+  texture: boolean
+  format3d: Model3DFormat
 }
 
 const isUrl = (value: string) => /^https?:\/\/\S+$/.test(value)
@@ -118,6 +136,15 @@ export function buildRequest(s: Settings): GenerateRequest | string {
     }
     const input = { prompt, aspect_ratio: s.aspect as never, resolution: s.resolution }
     return { kind: 'image', model: s.imageModel, input } as GenerateRequest
+  }
+
+  if (s.mode === '3d') {
+    if (!s.references.length) return 'Add 1–4 photos of the object: front, back, left, right.'
+    return {
+      kind: '3d',
+      model: s.model3d,
+      input: { images: s.references, resolution: s.resolution3d, texture: s.texture, format: s.format3d }
+    }
   }
 
   if (imageUrl && !isUrl(imageUrl)) return 'Image URL must start with http(s)://'
@@ -188,13 +215,18 @@ export type Job = {
   stage: string
   images?: string[]
   video?: string
+  model3d?: Model3D
   error?: string
   /** Estimated Workers AI neurons spent (Cloudflare models only). */
   neurons?: number
 }
 
 /** Background runs return a runId to follow; fast providers return the images directly. */
-export type GenerationStart = { runId: string } | { images: string[]; neurons?: number } | { video: string }
+export type GenerationStart =
+  | { runId: string }
+  | { images: string[]; neurons?: number }
+  | { video: string }
+  | { model3d: Model3D }
 
 export async function startGeneration(request: GenerateRequest): Promise<GenerationStart> {
   const res = await fetch('/api/generate', {
@@ -207,13 +239,18 @@ export async function startGeneration(request: GenerateRequest): Promise<Generat
     images: string[]
     neurons: number
     video: string
+    model3d: Model3D
     error: string
   }>
   if (res.ok && body.runId) return { runId: body.runId }
   if (res.ok && body.images?.length) return { images: body.images, neurons: body.neurons }
   if (res.ok && body.video) return { video: body.video }
+  if (res.ok && body.model3d) return { model3d: body.model3d }
   throw new Error(body.error ?? `Request failed (${res.status})`)
 }
+
+/** Ark's file host sends no CORS headers, so the browser reads model files through our API. */
+export const proxiedFileUrl = (url: string) => `/api/files?url=${encodeURIComponent(url)}`
 
 export async function fetchNeuronUsage(): Promise<NeuronUsage | undefined> {
   const res = await fetch('/api/usage/neurons').catch(() => undefined)
@@ -223,8 +260,11 @@ export async function fetchNeuronUsage(): Promise<NeuronUsage | undefined> {
 export const formatNeurons = (value: number) =>
   value.toLocaleString(undefined, { maximumFractionDigits: value < 100 ? 1 : 0 })
 
-/** Downscale an uploaded image (FLUX.2 caps references at 512×512), as a JPEG data URL. */
-export async function toReferenceImage(file: File, maxSide = 512): Promise<string> {
+/**
+ * Downscale an uploaded image as a data URL: JPEG at 512px by default (FLUX.2 caps references at
+ * 512×512); 3D references use PNG, which keeps a cut-out object's transparent background.
+ */
+export async function toReferenceImage(file: File, maxSide = 512, type: 'image/jpeg' | 'image/png' = 'image/jpeg'): Promise<string> {
   const bitmap = await createImageBitmap(file)
   const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height))
   const canvas = document.createElement('canvas')
@@ -232,7 +272,7 @@ export async function toReferenceImage(file: File, maxSide = 512): Promise<strin
   canvas.height = Math.round(bitmap.height * scale)
   canvas.getContext('2d')?.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
   bitmap.close()
-  return canvas.toDataURL('image/jpeg', 0.9)
+  return canvas.toDataURL(type, 0.9)
 }
 
 const stageLabel = (event: RunEvent) => {

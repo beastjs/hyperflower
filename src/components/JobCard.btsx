@@ -7,13 +7,34 @@ module
     onAnimate: (imageUrl: string, prompt: string) => void
   }
 
-import { useEffect } from 'octane'
-import { eventToPatch, formatNeurons, subscribeToRun } from '@/lib/generate'
+import { useEffect, useState } from 'octane'
+import { eventToPatch, formatNeurons, proxiedFileUrl, subscribeToRun } from '@/lib/generate'
 
 props { job, onUpdate, onAnimate }: Props
 
 setup
   const ratio = job.aspect.replace(':', ' / ')
+  const modelUrl = job.model3d && proxiedFileUrl(job.model3d.url)
+  const [stage, setStage] = useState<HTMLElement | null>(null)
+  const [viewer, setViewer] = useState<'loading' | 'ready' | 'failed'>('loading')
+
+  // three.js and the format's loader load only once a model card is on screen.
+  useEffect(() => {
+    if (!stage || !job.model3d || !modelUrl) return
+    const { format } = job.model3d
+    let dispose: (() => void) | undefined
+    let cancelled = false
+    import('@/lib/viewer3d')
+      .then(({ mountViewer }) => mountViewer(stage, modelUrl, format))
+      .then(
+        (cleanup) => (cancelled ? cleanup() : ((dispose = cleanup), setViewer('ready'))),
+        () => !cancelled && setViewer('failed')
+      )
+    return () => {
+      cancelled = true
+      dispose?.()
+    }
+  }, [stage, modelUrl])
 
   useEffect(() => {
     if (!job.runId || job.status !== 'pending') return
@@ -21,7 +42,24 @@ setup
   }, [job.runId])
 
 article(class="group flex min-w-0 flex-col gap-3")
-  if job.status === 'done' && job.video
+  if job.status === 'done' && job.model3d
+    figure(class="relative overflow-hidden rounded-2xl bg-sunken" style={{ aspectRatio: ratio }})
+      // The viewer draws its canvas into this element.
+      div(class="size-full" ref={setStage})
+      if viewer === 'loading'
+        div(class="shimmer absolute inset-0 flex items-center justify-center")
+          span(class="font-mono text-2xs uppercase tracking-[0.2em] text-muted-foreground") Loading model
+      elseif viewer === 'failed'
+        div(class="absolute inset-0 flex flex-col items-center justify-center gap-1 text-center")
+          span(class="font-mono text-2xs uppercase tracking-[0.2em] text-muted-foreground") #{job.model3d.format} model
+          span(class="text-xs text-muted-foreground/70") Preview unavailable
+      figcaption(class="pointer-events-none absolute inset-x-0 bottom-0 flex justify-end gap-1.5 p-2.5")
+        a(
+          ~ class="overlay-btn pointer-events-auto"
+          ~ href={modelUrl}
+          ~ download={`hyperflower-${job.id.slice(0, 8)}.${job.model3d.format}`}
+          ~ ) Download
+  elseif job.status === 'done' && job.video
     video(
       ~ class="w-full rounded-2xl bg-sunken object-cover"
       ~ style={{ aspectRatio: ratio }}
@@ -48,12 +86,6 @@ article(class="group flex min-w-0 flex-col gap-3")
               fragment
                 a.overlay-btn(href={url} target="_blank" rel="noreferrer") Open
                 button.overlay-btn(type="button" onClick={() => onAnimate(url, job.prompt)}) Animate
-  elseif job.status === 'error'
-    div(
-      ~ class="flex items-center justify-center rounded-2xl border border-dashed border-line p-6 text-center"
-      ~ style={{ aspectRatio: ratio }}
-      ~ )
-      p(class="max-w-xs text-sm break-words text-destructive [overflow-wrap:anywhere]") #{job.error}
   else
     div(class="shimmer flex items-center justify-center rounded-2xl" style={{ aspectRatio: ratio }})
       span(class="font-mono text-2xs uppercase tracking-[0.2em] text-muted-foreground") #{job.stage}

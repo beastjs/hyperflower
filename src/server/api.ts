@@ -3,16 +3,22 @@
 // Mounted into the Vite dev/preview server by vite.config.ts.
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { Readable } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
+import type { ReadableStream as NodeReadableStream } from 'node:stream/web'
 import { runs, tasks } from '@trigger.dev/sdk'
 import { Cause, Config, Effect, Layer, ManagedRuntime, Schema, Stream, Tuple } from 'effect'
 import {
   ArkError,
   ArkRequest,
   ArkVideoRequest,
+  Ark3DRequest,
+  ark3dModels,
   arkModels,
   arkVideoModels,
   generateArkImage,
-  generateArkVideo
+  generateArkVideo,
+  generateArk3D
 } from '../lib/ark'
 import { CloudflareAIError, CloudflareRequest, cloudflareModels, generateCloudflareImage } from '../lib/cloudflare'
 import { HiggsfieldError, ImageRequest, VideoRequest, imageModels, videoModels } from '../lib/hf'
@@ -27,7 +33,8 @@ const withKind = <K extends string>(kind: K) => Tuple.map(Schema.fieldsAssign({ 
 /** The POST /api/generate body: a model, its input, and whether it makes an image or a video. */
 export const GenerateRequest = Schema.Union([
   Schema.Union([...ImageRequest.members, ...CloudflareRequest.members, ...ArkRequest.members]).mapMembers(withKind('image')),
-  Schema.Union([...VideoRequest.members, ArkVideoRequest]).mapMembers(withKind('video'))
+  Schema.Union([...VideoRequest.members, ArkVideoRequest]).mapMembers(withKind('video')),
+  Schema.Union([Ark3DRequest]).mapMembers(withKind('3d'))
 ])
 export type GenerateRequest = typeof GenerateRequest.Type
 
@@ -44,6 +51,12 @@ class BadRequest extends Schema.TaggedError<BadRequest>()('BadRequest', { messag
 
 class TriggerError extends Schema.TaggedError<TriggerError>()('TriggerError', {
   message: Schema.String,
+  cause: Schema.optional(Schema.Defect())
+}) {}
+
+class FileError extends Schema.TaggedError<FileError>()('FileError', {
+  message: Schema.String,
+  httpStatus: Schema.optional(Schema.Number),
   cause: Schema.optional(Schema.Defect())
 }) {}
 
@@ -64,8 +77,12 @@ const Envelope = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal('video'),
     model: Schema.Literals(modelNames(videoModels, arkVideoModels)).annotate({ message: 'Unknown video model' })
+  }),
+  Schema.Struct({
+    kind: Schema.Literal('3d'),
+    model: Schema.Literals(modelNames(ark3dModels)).annotate({ message: 'Unknown 3D model' })
   })
-]).annotate({ message: 'kind must be "image" or "video"' })
+]).annotate({ message: 'kind must be "image", "video" or "3d"' })
 
 const decodeGenerateRequest = (body: string) =>
   Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(body).pipe(
@@ -85,7 +102,7 @@ const readBody = (req: IncomingMessage) =>
   })
 
 // Provider errors keep their 4xx status; anything upstream that broke is a 502.
-const errorReply = (error: BadRequest | TriggerError | ArkError | CloudflareAIError | HiggsfieldError): Reply => {
+const errorReply = (error: BadRequest | TriggerError | FileError | ArkError | CloudflareAIError | HiggsfieldError): Reply => {
   switch (error._tag) {
     case 'BadRequest':
       return { status: 400, body: { error: error.message } }
@@ -140,13 +157,60 @@ const generate = Effect.fn('api.generate')(function* (req: IncomingMessage) {
   if (Schema.is(ArkVideoRequest)(request)) {
     return { status: 200, body: { video: yield* generateArkVideo(request) } } satisfies Reply
   }
-  return yield* triggerTask(request, kind)
+  // Inline like Ark video: the request stays open for the ~12 minutes a textured model takes.
+  if (Schema.is(Ark3DRequest)(request)) {
+    return { status: 200, body: { model3d: yield* generateArk3D(request) } } satisfies Reply
+  }
+  return yield* triggerTask(request, kind === 'video' ? 'video' : 'image')
 })
 
 const usage = Effect.gen(function* () {
   const ledger = yield* NeuronLedger
   return { status: 200, body: yield* ledger.usage } satisfies Reply
 })
+
+// Generated 3D models live on Ark's object storage, which sends no CORS headers, so the browser
+// fetches them through here. Only those hosts are relayed: this must not become an open proxy.
+const fileHosts = ['.volces.com', '.bytepluses.com', '.byteplus.com']
+
+const isFileUrl = (url: URL) => url.protocol === 'https:' && fileHosts.some((host) => url.hostname.endsWith(host))
+
+const proxyFile = (url: string | null, res: ServerResponse) =>
+  Effect.gen(function* () {
+    const target = URL.canParse(url ?? '') ? new URL(url ?? '') : undefined
+    if (!target || !isFileUrl(target)) return yield* new BadRequest({ message: 'url must be a generated file URL' })
+
+    const upstream = yield* Effect.tryPromise({
+      try: (signal) => fetch(target, { signal }),
+      catch: (cause) => new FileError({ message: 'Could not reach the file host', cause })
+    })
+    if (!upstream.ok || !upstream.body) {
+      // Ark's links are presigned and expire; the host answers 403 once they do.
+      const expired = upstream.status === 403 || upstream.status === 404
+      return yield* new FileError({
+        message: expired ? 'This file has expired' : `File host answered ${upstream.status}`,
+        httpStatus: expired ? 410 : upstream.status
+      })
+    }
+    // DOM and Node type the same web stream differently.
+    const body = upstream.body as unknown as NodeReadableStream
+    const length = upstream.headers.get('content-length')
+    yield* Effect.sync(() =>
+      res.writeHead(200, {
+        'Content-Type': upstream.headers.get('content-type') ?? 'application/octet-stream',
+        'Cache-Control': 'private, max-age=86400',
+        ...(length && { 'Content-Length': length })
+      })
+    )
+    yield* Effect.tryPromise({
+      try: (signal) => pipeline(Readable.fromWeb(body), res, { signal }),
+      catch: (cause) => new FileError({ message: 'File transfer was cut short', cause })
+    })
+  }).pipe(
+    // Once the body has started, the status is sent; all that is left is to end the response.
+    Effect.catch((error) => (res.headersSent ? Effect.sync(() => res.destroy()) : json(res, errorReply(error)))),
+    Effect.withSpan('api.proxyFile')
+  )
 
 const toRunEvent = (run: {
   status: string
@@ -207,9 +271,11 @@ export async function apiMiddleware(req: IncomingMessage, res: ServerResponse, n
       ? reply(res, generate(req))
       : req.method === 'GET' && url.pathname === '/api/usage/neurons'
         ? reply(res, usage)
-        : req.method === 'GET' && match
-          ? streamRun(match[1], res)
-          : undefined
+        : req.method === 'GET' && url.pathname === '/api/files'
+          ? proxyFile(url.searchParams.get('url'), res)
+          : req.method === 'GET' && match
+            ? streamRun(match[1], res)
+            : undefined
   if (!route) return next()
 
   // 'close' before the reply is sent means the browser went away; stop the work it asked for.

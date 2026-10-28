@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { runPromise } from '../runtime'
-import { ArkError, generateArkImage, generateArkVideo } from '.'
+import { ArkError, generateArk3D, generateArkImage, generateArkVideo } from '.'
 
 type Call = { url: string; method: string; headers: Headers; body?: unknown }
 
@@ -87,4 +87,57 @@ test('fails when the video task fails or times out', async () => {
   await expect(
     runPromise(generateArkVideo({ model: 'seedanceFast', input: { prompt: 'p' } }, { interval: 1, timeout: 20 }))
   ).rejects.toThrow('timed out')
+})
+
+test('generates a 3D model, passing options as flags and images in view order', async () => {
+  replies.push(
+    { body: { id: '3d-1' } },
+    { body: { status: 'running' } },
+    { body: { status: 'succeeded', content: { file_url: 'https://cdn/model.glb' } } }
+  )
+  const model = await runPromise(
+    generateArk3D(
+      { model: 'hitem3d', input: { images: ['data:image/png;base64,AAAA', 'https://img/back.png'], resolution: '1536pro' } },
+      { interval: 1 }
+    )
+  )
+
+  expect(model).toEqual({ url: 'https://cdn/model.glb', format: 'glb' })
+  expect(calls[0].url).toBe(`${BASE}/contents/generations/tasks`)
+  expect(calls[0].body).toEqual({
+    model: 'hitem3d-2-0-251223',
+    content: [
+      { type: 'text', text: '--resolution 1536pro --request_type 3 --fileformat 2 --multi_images_bit 1100' },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } },
+      { type: 'image_url', image_url: { url: 'https://img/back.png' } }
+    ]
+  })
+})
+
+test('reads a 3D file url given as { url } and honours geometry-only and other formats', async () => {
+  replies.push({ body: { id: '3d-2' } }, { body: { status: 'succeeded', content: { file_url: { url: 'https://cdn/m.obj' } } } })
+  const model = await runPromise(
+    generateArk3D(
+      { model: 'hitem3d', input: { images: ['https://img/a.png'], texture: false, format: 'obj', face: 200_000 } },
+      { interval: 1 }
+    )
+  )
+
+  expect(model).toEqual({ url: 'https://cdn/m.obj', format: 'obj' })
+  expect(calls[0].body).toMatchObject({ content: [{ text: '--request_type 1 --fileformat 1 --face 200000' }, {}] })
+})
+
+test('cancels the Ark task when the caller is interrupted', async () => {
+  replies.push({ body: { id: '3d-3' } }, ...Array(20).fill({ body: { status: 'running' } }))
+  const controller = new AbortController()
+  const running = runPromise(generateArk3D({ model: 'hitem3d', input: { images: ['https://img/a.png'] } }, { interval: 1 }), {
+    signal: controller.signal
+  })
+  await Bun.sleep(10)
+  controller.abort()
+  await expect(running).rejects.toThrow()
+
+  const last = calls.at(-1)
+  expect(last?.method).toBe('DELETE')
+  expect(last?.url).toBe(`${BASE}/contents/generations/tasks/3d-3`)
 })

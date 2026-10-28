@@ -1,10 +1,13 @@
 module
   import type { ImageModel, VideoModel } from '@/lib/generate'
+  import type { Model3DFormat } from '@/lib/ark'
   import type { NeuronUsage } from '@/server/api'
 
   type ChipOption = { value: string; label: string, disabled?: boolean }
+  type NavItem = { label: string; mode?: Mode }
 
 import { useEffect, useState } from 'octane'
+import Callout from './components/Callout.btsx'
 import JobCard from './components/JobCard.btsx'
 import { cn } from '@/lib/utils'
 import {
@@ -13,20 +16,26 @@ import {
   ~ durations,
   ~ estimateSettingsNeurons,
   ~ fetchNeuronUsage,
+  ~ formats3d,
   ~ formatNeurons,
   ~ imageOptions,
+  ~ model3dOptions,
   ~ resolutions,
+  ~ resolutions3d,
   ~ startGeneration,
   ~ toReferenceImage,
   ~ videoOptions,
+  ~ views3d,
   ~ type Duration,
   ~ type Job,
   ~ type Mode,
   ~ type Resolution,
+  ~ type Resolution3D,
   ~ type Settings
   ~ } from '@/lib/generate'
 import { FLUX2_DEV_DEFAULT_STEPS } from '@/lib/cloudflare/pricing'
 import {Icon} from "@/lib/icons";
+import { addError, loadErrors, saveErrors, type ErrorNotice } from '@/lib/errors'
 
 component Chips
   props { options, value, onSelect, label }: { options: ChipOption[]; value: string; onSelect: (value: string) => void; label: string }
@@ -45,7 +54,10 @@ props { }: {}
 
 setup
   const [mode, setMode] = useState<Mode>('image')
-  const [prompt, setPrompt] = useState('')
+  // Each mode keeps its own prompt, so switching to start another generation loses nothing.
+  const [prompts, setPrompts] = useState<Record<Mode, string>>({ image: '', video: '', '3d': '' })
+  const prompt = prompts[mode]
+  const setPrompt = (value: string) => setPrompts((all) => ({ ...all, [mode]: value }))
   const [imageModel, setImageModel] = useState<ImageModel>(imageOptions[0].id)
   const [videoModel, setVideoModel] = useState<VideoModel>(videoOptions[0].id)
   const [imageAspect, setImageAspect] = useState('3:4')
@@ -55,20 +67,34 @@ setup
   const [imageUrl, setImageUrl] = useState('')
   const [references, setReferences] = useState<string[]>([])
   const [steps, setSteps] = useState(FLUX2_DEV_DEFAULT_STEPS)
+  const [model3d] = useState(model3dOptions[0].id)
+  // 3D photos are kept apart from image references: they are larger PNGs, in view order.
+  const [photos, setPhotos] = useState<string[]>([])
+  const [resolution3d, setResolution3d] = useState<Resolution3D>('1536')
+  const [texture, setTexture] = useState(true)
+  const [format3d, setFormat3d] = useState<Model3DFormat>('glb')
   const [jobs, setJobs] = useState<Job[]>([])
-  const [formError, setFormError] = useState<string>()
+  const [errors, setErrors] = useState<ErrorNotice[]>(loadErrors)
   const [usage, setUsage] = useState<NeuronUsage>()
 
   const refreshUsage = () => void fetchNeuronUsage().then((next) => next && setUsage(next))
   useEffect(refreshUsage, [])
+  useEffect(() => saveErrors(errors), [errors])
+
+  // Form problems carry no title; they are replaced by the next one and cleared by a valid request.
+  const showFormError = (message: string) =>
+    setErrors((list) => addError(list.filter((n) => n.title), { message }))
+  const dismissError = (id: string) => setErrors((list) => list.filter((n) => n.id !== id))
 
   const image = imageOptions.find((o) => o.id === imageModel) ?? imageOptions[0]
   const video = videoOptions.find((o) => o.id === videoModel) ?? videoOptions[0]
+  const option3d = model3dOptions.find((o) => o.id === model3d) ?? model3dOptions[0]
   const aspect = mode === 'image' ? imageAspect : videoAspect
   const setAspect = mode === 'image' ? setImageAspect : setVideoAspect
-  const showAspect = mode === 'image' ? image.aspect : video.aspect
-  const showResolution = mode === 'video' || image.resolution
+  const showAspect = mode === 'image' ? image.aspect : mode === 'video' && video.aspect
+  const showResolution = mode === 'video' || (mode === 'image' && image.resolution)
   const maxReferences = mode === 'image' ? (image.references ?? 0) : 0
+  const maxPhotos = mode === '3d' ? option3d.references : 0
   const showImageUrl = mode === 'video' && video.image !== undefined
   const stepOptions = mode === 'image' ? image.steps : undefined
   const usedShare = usage ? Math.min(1, usage.used / usage.limit) : 0
@@ -82,8 +108,12 @@ setup
     resolution,
     duration,
     imageUrl,
-    references: references.slice(0, maxReferences),
-    steps
+    references: mode === '3d' ? photos.slice(0, maxPhotos) : references.slice(0, maxReferences),
+    steps,
+    model3d,
+    resolution3d,
+    texture,
+    format3d
   }
   const cost = estimateSettingsNeurons(settings)
   const overBudget = cost !== undefined && usage !== undefined && cost > usage.remaining
@@ -96,34 +126,56 @@ setup
       const added = await Promise.all(files.map((file) => toReferenceImage(file)))
       setReferences((list) => [...list, ...added].slice(0, maxReferences))
     } catch {
-      setFormError('Could not read that image.')
+      showFormError('Could not read that image.')
     }
   }
-  const modelOptions: { id: string; label: string }[] = mode === 'image' ? imageOptions : videoOptions
+  const addPhotos = async (event: Event) => {
+    const input = event.currentTarget as HTMLInputElement
+    const files = [...(input.files ?? [])].slice(0, maxPhotos - photos.length)
+    input.value = ''
+    try {
+      const added = await Promise.all(files.map((file) => toReferenceImage(file, 1024, 'image/png')))
+      setPhotos((list) => [...list, ...added].slice(0, maxPhotos))
+    } catch {
+      showFormError('Could not read that image.')
+    }
+  }
+  const modelOptions: { id: string; label: string }[] =
+    mode === 'image' ? imageOptions : mode === 'video' ? videoOptions : model3dOptions
   const toChips = (values: readonly (string | number)[], suffix = '') =>
     values.map((v) => ({ value: String(v), label: `${v}${suffix}` }))
 
-  const updateJob = (id: string, patch: Partial<Job>) =>
-    setJobs((list) => list.map((job) => (job.id === id ? { ...job, ...patch } : job)))
+  // A failed job leaves the grid; its message stays as a callout until dismissed.
+  const failJob = (id: string, title: string, message = 'Generation failed') => {
+    setJobs((list) => list.filter((job) => job.id !== id))
+    setErrors((list) => addError(list, { title, message }))
+  }
 
+  const updateJob = (id: string, patch: Partial<Job>) =>
+    patch.status === 'error'
+      ? failJob(id, jobs.find((job) => job.id === id)?.label ?? 'Generation', patch.error)
+      : setJobs((list) => list.map((job) => (job.id === id ? { ...job, ...patch } : job)))
+
+  // Nothing here waits on earlier jobs: each request runs on its own, whatever the mode.
   const generate = async () => {
     const request = buildRequest(settings)
-    if (typeof request === 'string') return setFormError(request)
-    setFormError(undefined)
+    if (typeof request === 'string') return showFormError(request)
+    setErrors((list) => list.filter((n) => n.title))
 
     const id = crypto.randomUUID()
-    const label = (mode === 'image' ? image.label : video.label).replace(' · Free', '')
-    // Square-only models are 1:1; image-to-video keeps the source frame's shape, so show a neutral frame.
-    const jobAspect = showAspect ? aspect : mode === 'image' ? '1:1' : '16:9'
+    const label = (mode === 'image' ? image.label : mode === 'video' ? video.label : option3d.label).replace(' · Free', '')
+    // Square-only models and 3D previews are 1:1; image-to-video keeps the source frame's shape, so show a neutral frame.
+    const jobAspect = showAspect ? aspect : mode === 'video' ? '16:9' : '1:1'
+    const inline = mode === 'image' ? image.inline : mode === 'video' ? video.inline : true
     setJobs((list) => [
       {
         id,
         kind: mode,
         label,
-        prompt: prompt.trim(),
+        prompt: mode === '3d' ? `${photos.length} view${photos.length === 1 ? '' : 's'}` : prompt.trim(),
         aspect: jobAspect,
         status: 'pending',
-        stage: (mode === 'image' ? image.inline : video.inline) ? 'Generating' : 'Queued'
+        stage: mode === '3d' ? 'Modelling · about 12 min' : inline ? 'Generating' : 'Queued'
       },
       ...list
     ])
@@ -131,10 +183,11 @@ setup
       const started = await startGeneration(request)
       if ('runId' in started) return updateJob(id, { runId: started.runId })
       if ('video' in started) return updateJob(id, { status: 'done', video: started.video })
+      if ('model3d' in started) return updateJob(id, { status: 'done', model3d: started.model3d })
       updateJob(id, { status: 'done', images: started.images, neurons: started.neurons })
       if (started.neurons !== undefined) refreshUsage()
     } catch (error) {
-      updateJob(id, { status: 'error', error: (error as Error).message })
+      failJob(id, label, (error as Error).message)
     }
   }
 
@@ -154,52 +207,68 @@ setup
     setMode('video')
     setVideoModel('seedanceFast')
     setImageUrl(url)
-    setPrompt(sourcePrompt)
+    setPrompts((all) => ({ ...all, video: sourcePrompt }))
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
+  // Items without a mode are not built yet.
+  const navitems: NavItem[] = [
+    { label: 'image', mode: 'image' },
+    { label: 'video', mode: 'video' },
+    { label: '3D', mode: '3d' },
+    { label: 'audio' },
+    { label: 'agent' }
+  ]
+  const pendingIn = (m: Mode) => jobs.some((job) => job.kind === m && job.status === 'pending')
+
 main(class="flex min-h-dvh bg-background text-foreground")
-  aside(className='max-w-xs flex w-full h-screen px-2 pt-36 pb-10')
+  aside(className='max-w-xs flex w-full h-screen pt-36 pb-10')
     div(className='text-left space-y-4 font-mono text-2xs tracking-widest')
-      div(className='space-x-2 flex items-center')
-        div(className='relative flex items-center justify-center')
-          span(className='font-[200] text-[#4CA5FA] text-xs leading-2') ⎯
-          span(className='text-[#008EF4] text-xs leading-2 absolute blur-[2px]') ⎯
-        span(className='font-sans font-[450] text-xs tracking-wide') image
+      nav(className='flex flex-col items-start space-y-4' aria-label="Mode")
+        each navitem in navitems key navitem.label
+          button(
+            ~ type="button"
+            ~ disabled={!navitem.mode}
+            ~ aria-current={navitem.mode === mode ? 'page' : undefined}
+            ~ onClick={() => navitem.mode && setMode(navitem.mode)}
+            ~ className={cn(
+            ~   'space-x-2 flex items-center cursor-pointer hover:scale-[0.97] transition-all duration-180 ease-in-out disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:scale-100 -translate-x-1.75',
+            ~   { 'translate-x-0.5 hover:translate-x-1.25 hover:scale-100': navitem.mode === mode, 'space-x-0': !navitem.mode }
+            ~ )}
+            ~ )
+            div(className='relative flex items-center justify-center')
+              span(className={cn('font-[200] text-border text-xl leading-2', { 'text-[#4CA5FA]': navitem.mode === mode })}) ⎯
+              span(className={cn('font-[300] text-border text-xl leading-2 absolute blur-[2px]', { 'text-[#008EF4]': navitem.mode === mode })}) ⎯
+            span(className={cn('font-sans font-[450] text-muted-foreground text-xs tracking-wide', { 'text-foreground': navitem.mode === mode })}) #{navitem.label}
+            if navitem.mode && pendingIn(navitem.mode)
+              span(class="size-1 rounded-full bg-[#4CA5FA] animate-pulse" title="Generating")
 
-
-      p(className='space-x-2 flex items-center')
-        span(className='text-border text-xs leading-2') ⎯
-        span(className='font-sans font-[450] text-muted-foreground text-xs tracking-wide') audio
-
-      p(className='space-x-2 flex items-center')
-        span(className='text-border text-xs leading-2') ⎯
-        span(className='font-sans font-[450] text-muted-foreground text-xs tracking-wide') video
-
-      p(className='space-x-2 flex items-center')
-        span(className='text-border text-xs leading-2') ⎯
-        span(className='font-sans font-[450] text-muted-foreground text-xs tracking-wide') agent
 
 
   div(class="flex w-full max-w-4xl flex-col gap-12 px-4 pb-24 pt-10 sm:px-6 sm:pt-12 h-screen overflow-y-scroll")
     header(class="flex items-center justify-between gap-4")
       div(className='relative flex items-center justify-center')
-        h1(class="flex items-center font-mono font-[200] text-sm uppercase tracking-[0.3em] text-[#FAF2C196]")
+        h1(class="flex items-center font-mono font-[200] text-sm uppercase tracking-[0.3em] text-[#FAF2C1]")
           span Hyper
-          span(className='text-emerald-200 scale-90') ✕
+          span(className='text-sky-200 scale-90') ✕
           span flower
-        h1(class="flex items-center absolute font-mono font-[200] text-sm uppercase tracking-[0.3em] text-[#FFF2AA] blur-[2px]")
+        h1(class="flex items-center absolute font-mono font-[200] text-sm uppercase tracking-[0.3em] text-[#FFF2AA] blur-[3px]")
           span Hyper
-          span(className='text-emerald-200') ✕
+          span(className='text-sky-100/80') ✕
           span flower
 
-      Chips(
-        ~ label="Mode"
-        ~ options={[{ value: 'image', label: 'Image' }, { value: 'video', label: 'Video' }]}
-        ~ value={mode}
-        ~ onSelect={(value) => setMode(value as Mode)}
-        ~ )
-
+      if mode === '3d'
+        span(
+          ~ class="font-mono text-[11px] uppercase tracking-wide text-muted-foreground"
+          ~ title="Billed by BytePlus per model; a textured model takes about 12 minutes"
+          ~ )
+          | ≈ 12 min
+      if cost !== undefined
+        span(
+          ~ class={cn('font-mono text-[11px] uppercase tracking-wide', overBudget ? 'text-destructive' : 'text-muted-foreground')}
+          ~ title={overBudget ? 'More than the neurons left today; Cloudflare may reject or bill it' : 'Estimated neuron cost'}
+          ~ )
+            | ≈ #{formatNeurons(cost)} neurons
     if usage
       div(class="hidden -mt-6 _flex flex-col gap-2")
         div(class="flex items-baseline justify-between gap-4 font-mono text-2xs uppercase tracking-wider text-muted-foreground")
@@ -219,15 +288,40 @@ main(class="flex min-h-dvh bg-background text-foreground")
 
 
     form(class="composer flex flex-col gap-4 rounded-3xl border border-line bg-card p-4 sm:p-5" onSubmit={onSubmit})
-      textarea(
-        ~ class="min-h-28 w-full resize-none bg-transparent text-lg leading-relaxed outline-none
-        ~ placeholder:text-muted-foreground/60"
-        ~ aria-label="Prompt"
-        ~ placeholder={mode === 'image' ? 'A quiet alpine lake at sunrise, editorial photography' : 'A slow dolly through morning fog over the lake'}
-        ~ value={prompt}
-        ~ onInput={(event) => setPrompt(event.currentTarget.value)}
-        ~ onKeyDown={onKeyDown}
-        ~ )
+      if mode === '3d'
+        div(class="flex flex-col gap-3")
+          p(class="text-sm text-muted-foreground")
+            | Photos of one object, best on a plain background. Add them in order: front, back, left, right.
+          div(class="flex flex-wrap items-center gap-2" aria-label="Object photos")
+            each photo, index in photos key photo
+              figure(class="group/ref relative size-20 overflow-hidden rounded-xl bg-sunken")
+                img(class="size-full object-contain" src={photo} alt={`${views3d[index]} view`})
+                figcaption(class="absolute left-1.5 top-1 font-mono text-2xs text-white drop-shadow") #{views3d[index]}
+                button(
+                  ~ type="button"
+                  ~ class="absolute inset-0 flex items-center justify-center bg-black/50 text-xs text-white opacity-0
+                  ~ transition-opacity group-hover/ref:opacity-100 focus-visible:opacity-100"
+                  ~ aria-label={`Remove ${views3d[index]} view`}
+                  ~ onClick={() => setPhotos((list) => list.filter((_, i) => i !== index))}
+                  ~ ) Remove
+            if photos.length < maxPhotos
+              label(
+                ~ class="flex size-20 cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border border-dashed
+                ~ border-line text-xs text-muted-foreground transition-colors hover:text-foreground focus-within:text-foreground"
+                ~ )
+                Icon(name='plus' size={10})
+                span #{views3d[photos.length]}
+                input(class="sr-only" type="file" accept="image/*" multiple onChange={addPhotos})
+      else
+        textarea(
+          ~ class="min-h-28 w-full resize-none bg-transparent text-lg leading-relaxed outline-none
+          ~ placeholder:text-muted-foreground/60"
+          ~ aria-label="Prompt"
+          ~ placeholder={mode === 'image' ? 'A quiet alpine lake at sunrise, editorial photography' : 'A slow dolly through morning fog over the lake'}
+          ~ value={prompt}
+          ~ onInput={(event) => setPrompt(event.currentTarget.value)}
+          ~ onKeyDown={onKeyDown}
+          ~ )
 
       if showImageUrl
         input(
@@ -269,15 +363,15 @@ main(class="flex min-h-dvh bg-background text-foreground")
         select(
           ~ className="field-select"
           ~ aria-label="Model"
-          ~ value={mode === 'image' ? imageModel : videoModel}
+          ~ value={mode === 'image' ? imageModel : mode === 'video' ? videoModel : model3d}
           ~ onChange={(event) =>
           ~   mode === 'image'
           ~     ? setImageModel(event.currentTarget.value as ImageModel)
-          ~     : setVideoModel(event.currentTarget.value as VideoModel)}
+          ~     : mode === 'video' && setVideoModel(event.currentTarget.value as VideoModel)}
           ~ )
           each m in modelOptions key m.id
             option(value={m.id}) #{m.label}
-        if showAspect
+        if showAspect && mode !== '3d'
           Chips(label="Aspect ratio" options={toChips(aspectRatios[mode])} value={aspect} onSelect={setAspect})
         if showResolution
           Chips(
@@ -286,6 +380,26 @@ main(class="flex min-h-dvh bg-background text-foreground")
             ~ value={resolution}
             ~ onSelect={(value) => setResolution(value as Resolution)}
             ~ )
+        if mode === '3d'
+          fragment
+            Chips(
+              ~ label="Texture"
+              ~ options={[{ value: 'on', label: 'Textured' }, { value: 'off', label: 'Geometry' }]}
+              ~ value={texture ? 'on' : 'off'}
+              ~ onSelect={(value) => setTexture(value === 'on')}
+              ~ )
+            Chips(
+              ~ label="3D resolution"
+              ~ options={toChips(resolutions3d)}
+              ~ value={resolution3d}
+              ~ onSelect={(value) => setResolution3d(value as Resolution3D)}
+              ~ )
+            Chips(
+              ~ label="Format"
+              ~ options={toChips(formats3d)}
+              ~ value={format3d}
+              ~ onSelect={(value) => setFormat3d(value as Model3DFormat)}
+              ~ )
         if mode === 'video'
           Chips(
             ~ label="Duration"
@@ -301,20 +415,19 @@ main(class="flex min-h-dvh bg-background text-foreground")
             ~ onSelect={(value) => setSteps(Number(value))}
             ~ )
         div(class="ml-auto flex items-center gap-3")
-          if cost !== undefined
-            span(
-              ~ class={cn('font-mono text-[11px] uppercase tracking-wide', overBudget ? 'text-destructive' : 'text-muted-foreground')}
-              ~ title={overBudget ? 'More than the neurons left today; Cloudflare may reject or bill it' : 'Estimated neuron cost'}
-              ~ )
-              | ≈ #{formatNeurons(cost)} neurons
+
           button(
             ~ type="submit"
-            ~ class="inline-flex h-9 items-center gap-2 rounded-full bg-primary px-5 text-sm text-primary-foreground
+            ~ class="inline-flex h-9 items-center rounded-full bg-primary px-4 text-sm text-primary-foreground
             ~ transition hover:opacity-85 active:scale-[0.98]"
-            ~ ) Generate
+            ~ )
+            Icon(name='enter' size={14})
 
-      if formError
-        p(class="px-1 text-sm text-destructive") #{formError}
+
+    if errors.length
+      div(class="-mt-6 flex flex-col gap-2" aria-label="Errors")
+        each notice in errors key notice.id
+          Callout(title={notice.title} message={notice.message} onDismiss={() => dismissError(notice.id)})
 
     if jobs.length
       section(class="grid grid-cols-1 gap-x-5 gap-y-10 sm:grid-cols-2" aria-label="Generations")
@@ -331,7 +444,7 @@ main(class="flex min-h-dvh bg-background text-foreground")
           span(className='') #{formatNeurons(usage.remaining)}
           div(className='relative flex items-center justify-center')
             span(className='font-[200] text-[#4bd3ab] text-xs leading-2') ⎯
-            span(className='text-[#00AC86] text-xs leading-2 absolute blur-[3px]') ⎯
+            span(className='text-[#00AC86] text-xs leading-2 absolute blur-[4px]') ⎯
 
         div(className='space-x-2 flex items-center justify-end')
           span(className='') #{formatNeurons(usage.used)}

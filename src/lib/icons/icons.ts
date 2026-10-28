@@ -6,6 +6,7 @@ export const ICON_VIEWBOX = '0 0 24 24'
 export const icons = {
   'arrow-right': '<path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75" d="M4 12h15m-5 5.657L19.657 12 14 6.343"/>',
   close: '<path d="M13.46 12 19 17.54V19h-1.46L12 13.46 6.46 19H5v-1.46L10.54 12 5 6.46V5h1.46L12 10.54 17.54 5H19v1.46z"/>',
+  enter: '<path fill-opacity=".85" d="M1.15 14.25c0 .48.37.84.84.85l3.74.17h14.5c2.66 0 3.77-1.21 3.77-3.78V4.76C24 2.1 22.9 1 20.24 1h-6.37a1 1 0 0 0-1.03 1.02c0 .55.4 1 1.03 1h6.37c1.2 0 1.72.53 1.72 1.73v6.73c0 1.23-.52 1.75-1.72 1.75H5.73l-3.74.16a.87.87 0 0 0-.84.85m-1.15 0q0 .42.34.77l6.68 6.56c.2.19.49.32.74.32.61 0 1-.42 1-1.01q0-.43-.27-.7L5.2 17l-2.8-2.4v-.68l2.8-2.4 3.28-3.2a1 1 0 0 0 .27-.7c0-.6-.39-1-1-1-.25 0-.54.11-.74.31L.34 13.5q-.34.32-.34.75"/>',
   menu: '<path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 6h10M4 12h16M7 12h13M7 18h10"/>',
   plus: '<path fill-opacity=".85" d="M13.3 22.67V1.31C13.3.6 12.72 0 12 0c-.7 0-1.3.61-1.3 1.3v21.37c0 .7.6 1.31 1.3 1.31.72 0 1.3-.6 1.3-1.3M1.32 13.3H22.7c.7 0 1.3-.6 1.3-1.3 0-.72-.6-1.32-1.3-1.32H1.32c-.7 0-1.3.6-1.3 1.31s.6 1.3 1.3 1.3"/>',
   search: '<path fill-rule="evenodd" d="M2.25 9.75a7.5 7.5 0 1 1 15 0 7.5 7.5 0 0 1-15 0M9.75 0a9.75 9.75 0 1 0 6.06 17.4l5.145 5.145.795.795 1.59-1.59-.795-.795L17.4 15.81A9.75 9.75 0 0 0 9.75 0" clip-rule="evenodd" shape-rendering="geometricprecision"/>',

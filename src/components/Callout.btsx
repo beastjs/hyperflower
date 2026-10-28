@@ -1,0 +1,28 @@
+module
+  interface Props {
+    title?: string
+    message: string
+    onDismiss: () => void
+  }
+
+import { Icon } from '@/lib/icons'
+
+props { title, message, onDismiss }: Props
+
+div(
+  ~ class="flex items-start gap-3 rounded-2xl border border-destructive/25 bg-destructive/[0.06] py-3 pl-4 pr-2"
+  ~ role="alert"
+  ~ )
+  span(class="mt-1.5 size-1.5 shrink-0 rounded-full bg-destructive" aria-hidden="true")
+  div(class="flex min-w-0 flex-1 flex-col gap-0.5")
+    if title
+      span(class="font-mono text-2xs uppercase tracking-[0.2em] text-destructive") #{title}
+    p(class="text-sm leading-snug break-words text-foreground/85 [overflow-wrap:anywhere]") #{message}
+  button(
+    ~ type="button"
+    ~ class="flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors
+    ~ hover:bg-destructive/10 hover:text-foreground"
+    ~ aria-label="Dismiss"
+    ~ onClick={onDismiss}
+    ~ )
+    Icon(name='close' size={12})
