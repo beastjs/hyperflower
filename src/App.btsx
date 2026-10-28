@@ -1,19 +1,23 @@
 module
   import type { VideoModel } from '@/lib/hf'
   import type { ImageModel } from '@/lib/generate'
+  import type { NeuronUsage } from '@/server/api'
 
   type ChipOption = { value: string; label: string, disabled?: boolean }
 
-import { useState } from 'octane'
+import { useEffect, useState } from 'octane'
 import JobCard from './components/JobCard.btsx'
 import { cn } from '@/lib/utils'
 import {
   ~ aspectRatios,
   ~ buildRequest,
   ~ durations,
+  ~ fetchNeuronUsage,
+  ~ formatNeurons,
   ~ imageOptions,
   ~ resolutions,
   ~ startGeneration,
+  ~ toReferenceImage,
   ~ videoOptions,
   ~ type Duration,
   ~ type Job,
@@ -46,16 +50,35 @@ setup
   const [resolution, setResolution] = useState<Resolution>('720p')
   const [duration, setDuration] = useState<Duration>(5)
   const [imageUrl, setImageUrl] = useState('')
+  const [references, setReferences] = useState<string[]>([])
   const [jobs, setJobs] = useState<Job[]>([])
   const [formError, setFormError] = useState<string>()
+  const [usage, setUsage] = useState<NeuronUsage>()
+
+  const refreshUsage = () => void fetchNeuronUsage().then((next) => next && setUsage(next))
+  useEffect(refreshUsage, [])
 
   const image = imageOptions.find((o) => o.id === imageModel) ?? imageOptions[0]
   const video = videoOptions.find((o) => o.id === videoModel) ?? videoOptions[0]
   const aspect = mode === 'image' ? imageAspect : videoAspect
   const setAspect = mode === 'image' ? setImageAspect : setVideoAspect
-  const showAspect = mode === 'image' ? !image.square : video.aspect
-  const showResolution = mode === 'video' || !image.square
+  const showAspect = mode === 'image' ? image.aspect : video.aspect
+  const showResolution = mode === 'video' || image.resolution
+  const maxReferences = mode === 'image' ? (image.references ?? 0) : 0
   const showImageUrl = mode === 'video' && video.image !== undefined
+  const usedShare = usage ? Math.min(1, usage.used / usage.limit) : 0
+
+  const addReferences = async (event: Event) => {
+    const input = event.currentTarget as HTMLInputElement
+    const files = [...(input.files ?? [])].slice(0, maxReferences - references.length)
+    input.value = ''
+    try {
+      const added = await Promise.all(files.map((file) => toReferenceImage(file)))
+      setReferences((list) => [...list, ...added].slice(0, maxReferences))
+    } catch {
+      setFormError('Could not read that image.')
+    }
+  }
   const modelOptions: { id: string; label: string }[] = mode === 'image' ? imageOptions : videoOptions
   const toChips = (values: readonly (string | number)[], suffix = '') =>
     values.map((v) => ({ value: String(v), label: `${v}${suffix}` }))
@@ -64,7 +87,17 @@ setup
     setJobs((list) => list.map((job) => (job.id === id ? { ...job, ...patch } : job)))
 
   const generate = async () => {
-    const request = buildRequest({ mode, prompt, imageModel, videoModel, aspect, resolution, duration, imageUrl })
+    const request = buildRequest({
+      mode,
+      prompt,
+      imageModel,
+      videoModel,
+      aspect,
+      resolution,
+      duration,
+      imageUrl,
+      references: references.slice(0, maxReferences)
+    })
     if (typeof request === 'string') return setFormError(request)
     setFormError(undefined)
 
@@ -73,12 +106,22 @@ setup
     // Square-only models are 1:1; image-to-video keeps the source frame's shape, so show a neutral frame.
     const jobAspect = showAspect ? aspect : mode === 'image' ? '1:1' : '16:9'
     setJobs((list) => [
-      { id, kind: mode, label, prompt: prompt.trim(), aspect: jobAspect, status: 'pending', stage: 'Queued' },
+      {
+        id,
+        kind: mode,
+        label,
+        prompt: prompt.trim(),
+        aspect: jobAspect,
+        status: 'pending',
+        stage: mode === 'image' && image.inline ? 'Generating' : 'Queued'
+      },
       ...list
     ])
     try {
       const started = await startGeneration(request)
-      updateJob(id, 'runId' in started ? { runId: started.runId } : { status: 'done', images: started.images })
+      if ('runId' in started) return updateJob(id, { runId: started.runId })
+      updateJob(id, { status: 'done', images: started.images, neurons: started.neurons })
+      if (started.neurons !== undefined) refreshUsage()
     } catch (error) {
       updateJob(id, { status: 'error', error: (error as Error).message })
     }
@@ -115,6 +158,23 @@ main(class="min-h-dvh bg-background text-foreground")
         ~ onSelect={(value) => setMode(value as Mode)}
         ~ )
 
+    if usage
+      div(class="-mt-6 flex flex-col gap-2")
+        div(class="flex items-baseline justify-between gap-4 font-mono text-2xs uppercase tracking-wider text-muted-foreground")
+          span
+            | #{formatNeurons(usage.remaining)} neurons left today
+          span(
+            ~ title={usage.source === 'cloudflare'
+            ~   ? 'Account-wide usage from Cloudflare analytics'
+            ~   : "Estimated from this app's generations. Give the token Account Analytics: Read for exact usage."}
+            ~ )
+            | #{formatNeurons(usage.used)} / #{formatNeurons(usage.limit)}#{usage.source === 'estimate' ? ' · est.' : ''}
+        div(class="h-px w-full overflow-hidden rounded-full bg-line")
+          div(
+            ~ class={cn('h-full transition-[width] duration-500', usedShare > 0.9 ? 'bg-destructive' : 'bg-foreground/60')}
+            ~ style={{ width: `${usedShare * 100}%` }}
+            ~ )
+
     form(class="composer flex flex-col gap-4 rounded-3xl border border-line bg-card p-4 sm:p-5" onSubmit={onSubmit})
       textarea(
         ~ class="min-h-28 w-full resize-none bg-transparent text-lg leading-relaxed outline-none
@@ -135,6 +195,29 @@ main(class="min-h-dvh bg-background text-foreground")
           ~ value={imageUrl}
           ~ onInput={(event) => setImageUrl(event.currentTarget.value)}
           ~ )
+
+      if maxReferences > 0
+        div(class="flex flex-wrap items-center gap-2" aria-label="Reference images")
+          each ref, index in references.slice(0, maxReferences) key ref
+            figure(class="group/ref relative size-12 overflow-hidden rounded-xl bg-sunken")
+              img(class="size-full object-cover" src={ref} alt={`Reference image ${index + 1}`})
+              figcaption(class="absolute left-1 top-0.5 font-mono text-2xs text-white drop-shadow") #{index + 1}
+              button(
+                ~ type="button"
+                ~ class="absolute inset-0 flex items-center justify-center bg-black/50 text-xs text-white opacity-0
+                ~ transition-opacity group-hover/ref:opacity-100 focus-visible:opacity-100"
+                ~ aria-label={`Remove reference image ${index + 1}`}
+                ~ onClick={() => setReferences((list) => list.filter((_, i) => i !== index))}
+                ~ ) Remove
+          if references.length < maxReferences
+            label(
+              ~ class="flex h-12 cursor-pointer items-center rounded-xl border border-dashed border-line px-4 text-xs
+              ~ text-muted-foreground transition-colors hover:text-foreground focus-within:text-foreground"
+              ~ )
+              | Add reference
+              input(class="sr-only" type="file" accept="image/*" multiple onChange={addReferences})
+          span(class="text-2xs text-muted-foreground")
+            | Up to #{maxReferences}; refer to them as “image 1”, “image 2”…
 
       div(class="flex flex-wrap items-center gap-2")
         select(

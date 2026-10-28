@@ -7,6 +7,9 @@ import { runs, tasks } from '@trigger.dev/sdk'
 import { CloudflareAIError, cloudflareModels, generateCloudflareImage, type CloudflareRequest } from '../lib/cloudflare'
 import { imageModels, videoModels, type ImageRequest, type VideoRequest } from '../lib/hf'
 import type { GenerationStage, imageTask, videoTask } from '../trigger/generate'
+import { getNeuronUsage, recordNeurons } from './neurons'
+
+export type { NeuronUsage } from './neurons'
 
 export type GenerateRequest =
   | ({ kind: 'image' } & (ImageRequest | CloudflareRequest))
@@ -48,7 +51,9 @@ const parseRequest = (body: unknown): GenerateRequest | string => {
 // a background run would add latency, and its output is too large for task storage.
 async function generateInline(payload: CloudflareRequest, res: ServerResponse) {
   try {
-    json(res, 200, { images: [await generateCloudflareImage(payload.model, payload.input)] })
+    const { image, neurons } = await generateCloudflareImage(payload)
+    await recordNeurons(neurons)
+    json(res, 200, { images: [image], neurons })
   } catch (error) {
     const status = error instanceof CloudflareAIError && error.httpStatus ? error.httpStatus : 502
     json(res, status >= 500 ? 502 : status, { error: (error as Error).message })
@@ -113,6 +118,7 @@ export async function apiMiddleware(req: IncomingMessage, res: ServerResponse, n
   const url = new URL(req.url ?? '/', 'http://localhost')
   try {
     if (req.method === 'POST' && url.pathname === '/api/generate') return await generate(req, res)
+    if (req.method === 'GET' && url.pathname === '/api/usage/neurons') return json(res, 200, await getNeuronUsage())
     const match = url.pathname.match(/^\/api\/runs\/([\w-]+)\/events$/)
     if (req.method === 'GET' && match) return await streamRun(match[1], req, res)
   } catch (error) {
