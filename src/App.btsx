@@ -159,25 +159,37 @@ setup
   }
 
 main(class="flex min-h-dvh bg-background text-foreground")
-  aside(className='max-w-xs flex w-full h-screen px-3 py-13')
-    div(className='text-left space-y-2 font-mono text-2xs tracking-widest')
-      p(className='space-x-1 flex items-center')
-        span(className='text-[#008EF4] text-sm leading-2') --
-        span text to image
+  aside(className='max-w-xs flex w-full h-screen px-2 pt-36 pb-10')
+    div(className='text-left space-y-4 font-mono text-2xs tracking-widest')
+      div(className='space-x-2 flex items-center')
+        div(className='relative flex items-center justify-center')
+          span(className='font-[200] text-[#4CA5FA] text-xs leading-2') ⎯
+          span(className='text-[#008EF4] text-xs leading-2 absolute blur-[2px]') ⎯
+        span(className='font-sans font-[450] text-xs tracking-wide') text to image
 
-      p(className='space-x-1 flex items-center')
-        span(className='text-border text-sm leading-2') --
-        span(className='text-muted-foreground') text to audio
 
-      p(className='space-x-1 flex items-center')
-        span(className='text-border text-sm leading-2') --
-        span(className='text-muted-foreground') workflower
+      p(className='space-x-2 flex items-center')
+        span(className='text-border text-xs leading-2') ⎯
+        span(className='font-sans font-[450] text-muted-foreground text-xs tracking-wide') text to audio
+
+      p(className='space-x-2 flex items-center')
+        span(className='text-border text-xs leading-2') ⎯
+        span(className='font-sans font-[450] text-muted-foreground text-xs tracking-wide') workflows
 
 
   div(class="flex w-full max-w-4xl flex-col gap-12 px-4 pb-24 pt-10 sm:px-6 sm:pt-12")
 
     header(class="flex items-center justify-between gap-4")
-      h1(class="font-mono font-[200] text-sm uppercase tracking-[0.3em] text-[#FFF2AA]") Hyperflower
+      div(className='relative flex items-center justify-center')
+        h1(class="flex items-center font-mono font-[200] text-sm uppercase tracking-[0.3em] text-[#FAF2C196]")
+          span Hyper
+          span(className='text-emerald-200 scale-90') ✕
+          span flower
+        h1(class="flex items-center absolute font-mono font-[200] text-sm uppercase tracking-[0.3em] text-[#FFF2AA] blur-[2px]")
+          span Hyper
+          span(className='text-emerald-200') ✕
+          span flower
+
       Chips(
         ~ label="Mode"
         ~ options={[{ value: 'image', label: 'Image' }, { value: 'video', label: 'Video', disabled: true }]}
@@ -306,13 +318,17 @@ main(class="flex min-h-dvh bg-background text-foreground")
       p(class="py-16 text-center font-mono text-2xs uppercase tracking-[0.25em] text-muted-foreground/70")
         | Your generations will appear here
 
-  aside(className='max-w-xs flex flex-col items-end w-full h-screen py-14 px-3')
+  aside(className='max-w-xs flex flex-col items-end w-full h-screen pt-32 pb-10 px-2')
     if usage
-      div(className='text-right space-y-2 font-mono text-2xs tracking-widest')
-        p(className='space-x-1 flex items-center justify-end')
+      div(className='text-right space-y-4 font-mono text-2xs tracking-widest')
+        div(className='space-x-2 flex items-center justify-end')
           span(className='') #{formatNeurons(usage.remaining)}
-          span(className='text-[#00AC86] text-sm') --
+          div(className='relative flex items-center justify-center')
+            span(className='font-[200] text-[#4bd3ab] text-xs leading-2') ⎯
+            span(className='text-[#00AC86] text-xs leading-2 absolute blur-[3px]') ⎯
 
-        p(className='space-x-1 flex items-center justify-end')
+        div(className='space-x-2 flex items-center justify-end')
           span(className='') #{formatNeurons(usage.used)}
-          span(className='text-[#F95B00] text-sm') --
+          div(className='relative flex items-center justify-center')
+            span(className='text-[#e27952] text-xs leading-2') ⎯
+            span(className='text-[#F95B00] text-xs leading-2 absolute blur-[4px]') ⎯
