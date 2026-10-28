@@ -165,6 +165,15 @@ main(class="flex min-h-dvh bg-background text-foreground")
         span(className='text-[#008EF4] text-sm leading-2') --
         span text to image
 
+      p(className='space-x-1 flex items-center')
+        span(className='text-border text-sm leading-2') --
+        span(className='text-muted-foreground') text to audio
+
+      p(className='space-x-1 flex items-center')
+        span(className='text-border text-sm leading-2') --
+        span(className='text-muted-foreground') workflower
+
+
   div(class="flex w-full max-w-4xl flex-col gap-12 px-4 pb-24 pt-10 sm:px-6 sm:pt-12")
 
     header(class="flex items-center justify-between gap-4")
