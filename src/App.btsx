@@ -1,6 +1,5 @@
 module
-  import type { VideoModel } from '@/lib/hf'
-  import type { ImageModel } from '@/lib/generate'
+  import type { ImageModel, VideoModel } from '@/lib/generate'
   import type { NeuronUsage } from '@/server/api'
 
   type ChipOption = { value: string; label: string, disabled?: boolean }
@@ -124,13 +123,14 @@ setup
         prompt: prompt.trim(),
         aspect: jobAspect,
         status: 'pending',
-        stage: mode === 'image' && image.inline ? 'Generating' : 'Queued'
+        stage: (mode === 'image' ? image.inline : video.inline) ? 'Generating' : 'Queued'
       },
       ...list
     ])
     try {
       const started = await startGeneration(request)
       if ('runId' in started) return updateJob(id, { runId: started.runId })
+      if ('video' in started) return updateJob(id, { status: 'done', video: started.video })
       updateJob(id, { status: 'done', images: started.images, neurons: started.neurons })
       if (started.neurons !== undefined) refreshUsage()
     } catch (error) {
@@ -152,7 +152,7 @@ setup
 
   const animate = (url: string, sourcePrompt: string) => {
     setMode('video')
-    setVideoModel('seedanceImage')
+    setVideoModel('seedanceFast')
     setImageUrl(url)
     setPrompt(sourcePrompt)
     window.scrollTo({ top: 0, behavior: 'smooth' })
@@ -165,20 +165,23 @@ main(class="flex min-h-dvh bg-background text-foreground")
         div(className='relative flex items-center justify-center')
           span(className='font-[200] text-[#4CA5FA] text-xs leading-2') ⎯
           span(className='text-[#008EF4] text-xs leading-2 absolute blur-[2px]') ⎯
-        span(className='font-sans font-[450] text-xs tracking-wide') text to image
+        span(className='font-sans font-[450] text-xs tracking-wide') image
 
 
       p(className='space-x-2 flex items-center')
         span(className='text-border text-xs leading-2') ⎯
-        span(className='font-sans font-[450] text-muted-foreground text-xs tracking-wide') text to audio
+        span(className='font-sans font-[450] text-muted-foreground text-xs tracking-wide') audio
 
       p(className='space-x-2 flex items-center')
         span(className='text-border text-xs leading-2') ⎯
-        span(className='font-sans font-[450] text-muted-foreground text-xs tracking-wide') workflows
+        span(className='font-sans font-[450] text-muted-foreground text-xs tracking-wide') video
+
+      p(className='space-x-2 flex items-center')
+        span(className='text-border text-xs leading-2') ⎯
+        span(className='font-sans font-[450] text-muted-foreground text-xs tracking-wide') agent
 
 
-  div(class="flex w-full max-w-4xl flex-col gap-12 px-4 pb-24 pt-10 sm:px-6 sm:pt-12")
-
+  div(class="flex w-full max-w-4xl flex-col gap-12 px-4 pb-24 pt-10 sm:px-6 sm:pt-12 h-screen overflow-y-scroll")
     header(class="flex items-center justify-between gap-4")
       div(className='relative flex items-center justify-center')
         h1(class="flex items-center font-mono font-[200] text-sm uppercase tracking-[0.3em] text-[#FAF2C196]")
@@ -192,7 +195,7 @@ main(class="flex min-h-dvh bg-background text-foreground")
 
       Chips(
         ~ label="Mode"
-        ~ options={[{ value: 'image', label: 'Image' }, { value: 'video', label: 'Video', disabled: true }]}
+        ~ options={[{ value: 'image', label: 'Image' }, { value: 'video', label: 'Video' }]}
         ~ value={mode}
         ~ onSelect={(value) => setMode(value as Mode)}
         ~ )
@@ -214,6 +217,7 @@ main(class="flex min-h-dvh bg-background text-foreground")
             ~ style={{ width: `${usedShare * 100}%` }}
             ~ )
 
+
     form(class="composer flex flex-col gap-4 rounded-3xl border border-line bg-card p-4 sm:p-5" onSubmit={onSubmit})
       textarea(
         ~ class="min-h-28 w-full resize-none bg-transparent text-lg leading-relaxed outline-none
@@ -230,7 +234,9 @@ main(class="flex min-h-dvh bg-background text-foreground")
           ~ class="field"
           ~ type="url"
           ~ aria-label="Image URL"
-          ~ placeholder={video.image === 'required' ? 'Start frame image URL' : 'Reference image URL (optional)'}
+          ~ placeholder={video.image === 'required'
+          ~   ? 'Start frame image URL'
+          ~   : video.id === 'seedanceFast' ? 'Start frame image URL (optional)' : 'Reference image URL (optional)'}
           ~ value={imageUrl}
           ~ onInput={(event) => setImageUrl(event.currentTarget.value)}
           ~ )
@@ -318,7 +324,7 @@ main(class="flex min-h-dvh bg-background text-foreground")
       p(class="py-16 text-center font-mono text-2xs uppercase tracking-[0.25em] text-muted-foreground/70")
         | Your generations will appear here
 
-  aside(className='max-w-xs flex flex-col items-end w-full h-screen pt-32 pb-10 px-2')
+  aside(className='max-w-xs flex flex-col items-end w-full h-screen pt-36 pb-10 px-2')
     if usage
       div(className='text-right space-y-4 font-mono text-2xs tracking-widest')
         div(className='space-x-2 flex items-center justify-end')

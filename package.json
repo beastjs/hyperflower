@@ -11,7 +11,8 @@
     "check": "bun run typecheck && bun run build",
     "icons:build": "bun scripts/build-icons.ts --svg src/lib/icons/svg --out src/lib/icons/icons.ts",
     "icons:check": "bun scripts/build-icons.ts --svg src/lib/icons/svg --out src/lib/icons/icons.ts --check",
-    "test": "bun test src"
+    "test": "bun test src",
+    "effect:subtree": "bun run scrips/update-effect-subtree.sh"
   },
   "dependencies": {
     "@higgsfield/client": "^0.2.6",
@@ -20,6 +21,7 @@
     "@trigger.dev/sdk": "4.8.1",
     "beast-tsrx": "0.16.0",
     "clsx": "^2.1.1",
+    "effect": "^4.0.7",
     "octane": "0.16.0",
     "tailwind-merge": "^3.6.0"
   },

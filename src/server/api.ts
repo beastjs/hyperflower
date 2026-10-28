@@ -4,6 +4,15 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { runs, tasks } from '@trigger.dev/sdk'
+import {
+  ArkError,
+  arkModels,
+  arkVideoModels,
+  generateArkImage,
+  generateArkVideo,
+  type ArkRequest,
+  type ArkVideoRequest
+} from '../lib/ark'
 import { CloudflareAIError, cloudflareModels, generateCloudflareImage, type CloudflareRequest } from '../lib/cloudflare'
 import { imageModels, videoModels, type ImageRequest, type VideoRequest } from '../lib/hf'
 import type { GenerationStage, imageTask, videoTask } from '../trigger/generate'
@@ -12,8 +21,8 @@ import { getNeuronUsage, recordNeurons } from './neurons'
 export type { NeuronUsage } from './neurons'
 
 export type GenerateRequest =
-  | ({ kind: 'image' } & (ImageRequest | CloudflareRequest))
-  | ({ kind: 'video' } & VideoRequest)
+  | ({ kind: 'image' } & (ImageRequest | CloudflareRequest | ArkRequest))
+  | ({ kind: 'video' } & (VideoRequest | ArkVideoRequest))
 
 export type RunEvent = {
   status: string
@@ -40,22 +49,23 @@ const readJson = async (req: IncomingMessage): Promise<unknown> => {
 const parseRequest = (body: unknown): GenerateRequest | string => {
   if (typeof body !== 'object' || body === null) return 'Expected a JSON object'
   const { kind, model, input } = body as Record<string, unknown>
-  const models = kind === 'image' ? { ...imageModels, ...cloudflareModels } : kind === 'video' ? videoModels : undefined
+  const models = kind === 'image' ? { ...imageModels, ...cloudflareModels, ...arkModels } : kind === 'video' ? { ...videoModels, ...arkVideoModels } : undefined
   if (!models) return 'kind must be "image" or "video"'
   if (typeof model !== 'string' || !(model in models)) return `Unknown ${kind} model`
   if (typeof input !== 'object' || input === null) return 'input must be an object'
   return { kind, model, input } as GenerateRequest
 }
 
-// Workers AI answers in a few seconds with the image bytes, so it is called inline:
-// a background run would add latency, and its output is too large for task storage.
-async function generateInline(payload: CloudflareRequest, res: ServerResponse) {
+// Workers AI and Ark are called inline: a background run would add latency, and Workers AI's
+// image bytes are too large for task storage. Ark video holds the request open while it polls.
+async function generateInline(
+  run: () => Promise<{ images: string[]; neurons?: number } | { video: string }>,
+  res: ServerResponse
+) {
   try {
-    const { image, neurons } = await generateCloudflareImage(payload)
-    await recordNeurons(neurons)
-    json(res, 200, { images: [image], neurons })
+    json(res, 200, await run())
   } catch (error) {
-    const status = error instanceof CloudflareAIError && error.httpStatus ? error.httpStatus : 502
+    const status = (error instanceof CloudflareAIError || error instanceof ArkError) && error.httpStatus ? error.httpStatus : 502
     json(res, status >= 500 ? 502 : status, { error: (error as Error).message })
   }
 }
@@ -66,7 +76,17 @@ async function generate(req: IncomingMessage, res: ServerResponse) {
 
   const { kind, ...payload } = parsed
   if (kind === 'image' && payload.model in cloudflareModels) {
-    return generateInline(payload as CloudflareRequest, res)
+    return generateInline(async () => {
+      const { image, neurons } = await generateCloudflareImage(payload as CloudflareRequest)
+      await recordNeurons(neurons)
+      return { images: [image], neurons }
+    }, res)
+  }
+  if (kind === 'image' && payload.model in arkModels) {
+    return generateInline(async () => ({ images: [await generateArkImage(payload as ArkRequest)] }), res)
+  }
+  if (kind === 'video' && payload.model in arkVideoModels) {
+    return generateInline(async () => ({ video: await generateArkVideo(payload as ArkVideoRequest) }), res)
   }
 
   if (!process.env.TRIGGER_SECRET_KEY) {

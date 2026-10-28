@@ -14,10 +14,10 @@ const api = (): Plugin => ({
 });
 
 export default defineConfig(({ mode }) => {
-  // Server-only secrets (TRIGGER_*, CLOUDFLARE_*) for the API middleware; never exposed to the client bundle.
+  // Server-only secrets (TRIGGER_*, CLOUDFLARE_*, ARK_*) for the API middleware; never exposed to the client bundle.
   // Vite re-runs this when .env changes, and loadEnv lets process.env win, so values we copied
   // in on a previous run are cleared first; real shell variables still take precedence.
-  const prefixes = ["TRIGGER_", "CLOUDFLARE_"];
+  const prefixes = ["TRIGGER_", "CLOUDFLARE_", "ARK_"];
   const isServerKey = (key: string) => prefixes.some((prefix) => key.startsWith(prefix));
   const g = globalThis as { __shellServerEnv?: Set<string> };
   g.__shellServerEnv ??= new Set(Object.keys(process.env).filter(isServerKey));

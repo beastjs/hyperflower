@@ -1,13 +1,15 @@
 // Browser-side helpers for the generation UI. Type-only imports keep hf/server code out of the bundle.
 import type { GenerateRequest, NeuronUsage, RunEvent } from '@/server/api'
+import type { ArkModel, ArkVideoModel } from './ark'
 import type { CloudflareModel } from './cloudflare'
 import { estimateNeurons } from './cloudflare/pricing'
-import type { ImageModel as HiggsfieldImageModel, VideoModel } from './hf'
+import type { ImageModel as HiggsfieldImageModel, VideoModel as HiggsfieldVideoModel } from './hf'
 
 export type Mode = 'image' | 'video'
 export type Resolution = '720p' | '1080p'
 export type Duration = 5 | 10
-export type ImageModel = HiggsfieldImageModel | CloudflareModel
+export type ImageModel = HiggsfieldImageModel | CloudflareModel | ArkModel
+export type VideoModel = HiggsfieldVideoModel | ArkVideoModel
 
 export const imageOptions: {
   id: ImageModel
@@ -17,7 +19,7 @@ export const imageOptions: {
   resolution: boolean
   /** Max reference images; omitted when the model takes none. */
   references?: number
-  /** Generated within the API request (no queue); FLUX.2 can take ~30s or more. */
+  /** Generated within the API request (no queue); FLUX.2 and Seedream can take ~30s or more. */
   inline?: boolean
   /** Selectable inference step counts; the first-listed default is FLUX2_DEV_DEFAULT_STEPS. */
   steps?: number[]
@@ -26,7 +28,9 @@ export const imageOptions: {
   // { id: 'soul', label: 'Soul', aspect: true, resolution: true },
   // { id: 'soulcinema', label: 'Soul Cinema', aspect: true, resolution: true },
   { id: 'fluxSchnell', label: 'FLUX 1', aspect: false, resolution: false, inline: true },
-  { id: 'flux2Klein', label: 'FLUX 2', aspect: true, resolution: false, references: 4, inline: true }
+  // { id: 'seedream5Pro', label: 'Seedream 5 Pro', aspect: true, resolution: false, references: 10, inline: true },
+  // { id: 'seedream5Flash', label: 'Seedream 5 Flash', aspect: true, resolution: false, references: 10, inline: true },
+  // { id: 'flux2Klein', label: 'FLUX 2', aspect: true, resolution: false, references: 4, inline: true },
   // {
   //   id: 'flux2Dev',
   //   label: 'CF - FLUX.2 dev',
@@ -46,14 +50,25 @@ const flux2Sizes: Record<string, { width: number; height: number }> = {
   '16:9': { width: 1024, height: 576 }
 }
 
+// Seedream 5 pro/flash take 921,600–4,624,220 total pixels; these are its 2K presets.
+const seedreamSizes: Record<string, string> = {
+  '1:1': '2048x2048',
+  '3:4': '1728x2304',
+  '9:16': '1440x2560',
+  '16:9': '2560x1440'
+}
+
 export const videoOptions: {
   id: VideoModel
   label: string
   aspect: boolean
   image?: 'required' | 'optional'
+  /** Generated within the API request (no queue), which stays open until the video is ready. */
+  inline?: boolean
 }[] = [
-  { id: 'seedanceText', label: 'Seedance 2.5', aspect: true },
-  { id: 'seedanceImage', label: 'Seedance 2.5 · Image', aspect: false, image: 'required' },
+  { id: 'seedanceFast', label: 'Seedance 1.0 Pro Fast', aspect: true, image: 'optional', inline: true },
+  // { id: 'seedanceText', label: 'Seedance 2.5', aspect: true },
+  // { id: 'seedanceImage', label: 'Seedance 2.5 · Image', aspect: false, image: 'required' },
   { id: 'wanReference', label: 'Wan 3.0', aspect: true, image: 'optional' }
 ]
 
@@ -97,6 +112,10 @@ export function buildRequest(s: Settings): GenerateRequest | string {
         ? { kind: 'image', model: 'flux2Dev', input: { ...input, steps: s.steps } }
         : { kind: 'image', model: 'flux2Klein', input }
     }
+    if (s.imageModel === 'seedream5Pro' || s.imageModel === 'seedream5Flash') {
+      const size = seedreamSizes[s.aspect] ?? seedreamSizes['1:1']
+      return { kind: 'image', model: s.imageModel, input: { prompt, size, ...(s.references.length && { image: s.references }) } }
+    }
     const input = { prompt, aspect_ratio: s.aspect as never, resolution: s.resolution }
     return { kind: 'image', model: s.imageModel, input } as GenerateRequest
   }
@@ -104,6 +123,19 @@ export function buildRequest(s: Settings): GenerateRequest | string {
   if (imageUrl && !isUrl(imageUrl)) return 'Image URL must start with http(s)://'
 
   switch (s.videoModel) {
+    case 'seedanceFast':
+      if (!prompt && !imageUrl) return 'Describe the video you want, or add a start frame.'
+      return {
+        kind: 'video',
+        model: 'seedanceFast',
+        input: {
+          duration: s.duration,
+          resolution: s.resolution,
+          ratio: s.aspect as never,
+          ...(prompt && { prompt }),
+          ...(imageUrl && { image_url: imageUrl })
+        }
+      }
     case 'seedanceImage':
       if (!imageUrl) return 'Add a start frame image URL.'
       return {
@@ -162,7 +194,7 @@ export type Job = {
 }
 
 /** Background runs return a runId to follow; fast providers return the images directly. */
-export type GenerationStart = { runId: string } | { images: string[]; neurons?: number }
+export type GenerationStart = { runId: string } | { images: string[]; neurons?: number } | { video: string }
 
 export async function startGeneration(request: GenerateRequest): Promise<GenerationStart> {
   const res = await fetch('/api/generate', {
@@ -174,10 +206,12 @@ export async function startGeneration(request: GenerateRequest): Promise<Generat
     runId: string
     images: string[]
     neurons: number
+    video: string
     error: string
   }>
   if (res.ok && body.runId) return { runId: body.runId }
   if (res.ok && body.images?.length) return { images: body.images, neurons: body.neurons }
+  if (res.ok && body.video) return { video: body.video }
   throw new Error(body.error ?? `Request failed (${res.status})`)
 }
 
@@ -189,7 +223,7 @@ export async function fetchNeuronUsage(): Promise<NeuronUsage | undefined> {
 export const formatNeurons = (value: number) =>
   value.toLocaleString(undefined, { maximumFractionDigits: value < 100 ? 1 : 0 })
 
-/** Downscale an uploaded image to fit FLUX.2's 512×512 reference limit, as a JPEG data URL. */
+/** Downscale an uploaded image (FLUX.2 caps references at 512×512), as a JPEG data URL. */
 export async function toReferenceImage(file: File, maxSide = 512): Promise<string> {
   const bitmap = await createImageBitmap(file)
   const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height))
