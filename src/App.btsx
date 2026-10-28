@@ -2,7 +2,7 @@ module
   import type { VideoModel } from '@/lib/hf'
   import type { ImageModel } from '@/lib/generate'
 
-  type ChipOption = { value: string; label: string }
+  type ChipOption = { value: string; label: string, disabled?: boolean }
 
 import { useState } from 'octane'
 import JobCard from './components/JobCard.btsx'
@@ -29,7 +29,8 @@ component Chips
         ~ type="button"
         ~ role="radio"
         ~ aria-checked={o.value === value}
-        ~ class={cn('chip', o.value === value && 'chip-active')}
+        ~ className={cn('chip', o.value === value && 'chip-active')}
+        ~ disabled={o.disabled}
         ~ onClick={() => onSelect(o.value)}
         ~ ) #{o.label}
 
@@ -38,8 +39,8 @@ props { }: {}
 setup
   const [mode, setMode] = useState<Mode>('image')
   const [prompt, setPrompt] = useState('')
-  const [imageModel, setImageModel] = useState<ImageModel>('soulv2')
-  const [videoModel, setVideoModel] = useState<VideoModel>('seedanceText')
+  const [imageModel, setImageModel] = useState<ImageModel>(imageOptions[0].id)
+  const [videoModel, setVideoModel] = useState<VideoModel>(videoOptions[0].id)
   const [imageAspect, setImageAspect] = useState('3:4')
   const [videoAspect, setVideoAspect] = useState('16:9')
   const [resolution, setResolution] = useState<Resolution>('720p')
@@ -55,7 +56,7 @@ setup
   const showAspect = mode === 'image' ? !image.square : video.aspect
   const showResolution = mode === 'video' || !image.square
   const showImageUrl = mode === 'video' && video.image !== undefined
-  const modelOptions = mode === 'image' ? imageOptions : videoOptions
+  const modelOptions: { id: string; label: string }[] = mode === 'image' ? imageOptions : videoOptions
   const toChips = (values: readonly (string | number)[], suffix = '') =>
     values.map((v) => ({ value: String(v), label: `${v}${suffix}` }))
 
@@ -109,7 +110,7 @@ main(class="min-h-dvh bg-background text-foreground")
       h1(class="font-mono text-xs uppercase tracking-[0.3em] text-muted-foreground") Hyperflower
       Chips(
         ~ label="Mode"
-        ~ options={[{ value: 'image', label: 'Image' }, { value: 'video', label: 'Video' }]}
+        ~ options={[{ value: 'image', label: 'Image' }, { value: 'video', label: 'Video', disabled: true }]}
         ~ value={mode}
         ~ onSelect={(value) => setMode(value as Mode)}
         ~ )

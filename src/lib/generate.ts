@@ -1,7 +1,7 @@
 // Browser-side helpers for the generation UI. Type-only imports keep hf/server code out of the bundle.
+import type { GenerateRequest, RunEvent } from '@/server/api'
 import type { CloudflareModel } from './cloudflare'
 import type { ImageModel as HiggsfieldImageModel, VideoModel } from './hf'
-import type { GenerateRequest, RunEvent } from '@/server/api'
 
 export type Mode = 'image' | 'video'
 export type Resolution = '720p' | '1080p'
@@ -14,10 +14,10 @@ export const imageOptions: {
   /** Fixed output shape when the model has no aspect/resolution controls. */
   square?: boolean
 }[] = [
-  { id: 'soulv2', label: 'Soul V2' },
-  { id: 'soul', label: 'Soul' },
-  { id: 'soulcinema', label: 'Soul Cinema' },
-  { id: 'fluxSchnell', label: 'FLUX.1 schnell · Free', square: true }
+  // { id: 'soulv2', label: 'Soul V2' },
+  // { id: 'soul', label: 'Soul' },
+  // { id: 'soulcinema', label: 'Soul Cinema' },
+  { id: 'fluxSchnell', label: 'CF - FLUX.1', square: true }
 ]
 
 export const videoOptions: {

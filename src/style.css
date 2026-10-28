@@ -266,10 +266,18 @@ a {
   border-radius: 999px;
   font-size: 12px;
   color: var(--muted-foreground);
-  transition: color 200ms ease, background-color 200ms ease;
+  transition:
+    color 200ms ease,
+    background-color 200ms ease;
 }
 .chip:hover {
   color: var(--foreground);
+}
+.chip:disabled {
+  color: color-mix(in srgb, var(--muted-foreground), transparent 60%);
+}
+.chip:disabled:hover {
+  cursor: not-allowed;
 }
 .chip-active {
   background: var(--background);
@@ -292,9 +300,12 @@ a {
 .field-select {
   appearance: none;
   padding-right: 30px;
-  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+  background-image:
+    linear-gradient(45deg, transparent 50%, currentColor 50%),
     linear-gradient(135deg, currentColor 50%, transparent 50%);
-  background-position: calc(100% - 15px) 14px, calc(100% - 11px) 14px;
+  background-position:
+    calc(100% - 15px) 14px,
+    calc(100% - 11px) 14px;
   background-size: 4px 4px;
   background-repeat: no-repeat;
 }
@@ -321,9 +332,15 @@ a {
   animation: shimmer 2.2s ease-in-out infinite;
 }
 @keyframes shimmer {
-  from { background-position: 100% 0; }
-  to { background-position: 0 0; }
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0 0;
+  }
 }
 @media (prefers-reduced-motion: reduce) {
-  .shimmer { animation: none; }
+  .shimmer {
+    animation: none;
+  }
 }
