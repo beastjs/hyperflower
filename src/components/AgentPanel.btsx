@@ -1,0 +1,108 @@
+module
+  type Message = { id: string; role: 'user' | 'assistant'; content: string }
+
+import { useEffect, useState } from 'octane'
+import { cn } from '@/lib/utils'
+
+props { active }: { active: boolean }
+
+setup
+  const [messages, setMessages] = useState<Message[]>([
+    {
+      id: 'welcome',
+      role: 'assistant',
+      content: 'Hi, I’m Hyperflower Agent. Tell me what you want to create, and I’ll help shape the idea into a strong prompt.'
+    }
+  ])
+  const [input, setInput] = useState('')
+  const [sending, setSending] = useState(false)
+  const [error, setError] = useState('')
+  const [endOfMessages, setEndOfMessages] = useState<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    endOfMessages?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+  }, [messages, sending])
+
+  const send = async (event: SubmitEvent) => {
+    event.preventDefault()
+    const content = input.trim()
+    if (!content || sending) return
+
+    const nextMessages: Message[] = [...messages, { id: crypto.randomUUID(), role: 'user', content }]
+    setMessages(nextMessages)
+    setInput('')
+    setError('')
+    setSending(true)
+    try {
+      const response = await fetch('/api/agent', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ messages: nextMessages.map(({ role, content }) => ({ role, content })) })
+      })
+      const payload = (await response.json()) as { message?: string; error?: string }
+      if (!response.ok || !payload.message) throw new Error(payload.error ?? 'The agent could not reply.')
+      setMessages((current) => [...current, { id: crypto.randomUUID(), role: 'assistant', content: payload.message! }])
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'The agent could not reply.')
+    } finally {
+      setSending(false)
+    }
+  }
+
+  const startNewChat = () => {
+    setMessages([
+      {
+        id: 'welcome',
+        role: 'assistant',
+        content: 'Hi, I’m Hyperflower Agent. Tell me what you want to create, and I’ll help shape the idea into a strong prompt.'
+      }
+    ])
+    setError('')
+    setInput('')
+  }
+
+  const onKeyDown = (event: KeyboardEvent & { currentTarget: HTMLTextAreaElement }) => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault()
+      event.currentTarget.form?.requestSubmit()
+    }
+  }
+
+section(class={cn('flex min-h-[65vh] flex-col gap-4 rounded-3xl bg-[#363636] p-4 sm:p-5', !active && 'hidden')} aria-label="Hyperflower Agent")
+  header(class="flex items-center justify-between gap-4")
+    div(class="space-y-1")
+      h2(class="text-sm font-medium") Hyperflower Agent
+      p(class="font-mono text-[10px] uppercase tracking-widest text-muted-foreground") Seed 2.1 Turbo
+    button(type="button" class="text-xs text-muted-foreground transition-colors hover:text-foreground disabled:opacity-40" disabled={sending} onClick={startNewChat}) New chat
+
+  div(class="flex min-h-[40vh] flex-1 flex-col gap-3 overflow-y-auto pr-1" aria-live="polite" aria-label="Conversation")
+    each message in messages key message.id
+      div(class={cn('flex', message.role === 'user' ? 'justify-end' : 'justify-start')})
+        p(class={cn('max-w-[85%] whitespace-pre-wrap rounded-2xl px-4 py-3 text-sm leading-relaxed', message.role === 'user' ? 'bg-[#4CA5FA]/15 text-foreground' : 'bg-background/40 text-foreground/90')}) #{message.content}
+    if sending
+      p(class="self-start rounded-2xl bg-background/40 px-4 py-3 text-xs text-muted-foreground" aria-label="Agent is replying") Thinking…
+    div(ref={setEndOfMessages})
+
+  if error
+    p(class="text-sm text-destructive" role="alert") #{error}
+
+  form(class="flex items-end gap-3 rounded-2xl border border-white/10 bg-background/30 p-3" onSubmit={send})
+    textarea(
+      ~ class="max-h-40 min-h-12 flex-1 resize-y bg-transparent px-1 py-2 text-sm leading-relaxed outline-none placeholder:text-muted-foreground/60"
+      ~ aria-label="Message the agent"
+      ~ placeholder="Ask for ideas or a generation prompt…"
+      ~ rows={2}
+      ~ value={input}
+      ~ onInput={(event) => setInput(event.currentTarget.value)}
+      ~ onKeyDown={onKeyDown}
+      ~ disabled={sending}
+      ~ )
+    button(
+      ~ type="submit"
+      ~ disabled={!input.trim() || sending}
+      ~ class="h-9 rounded-full bg-foreground px-4 text-sm text-background transition-opacity hover:opacity-85 disabled:cursor-not-allowed disabled:opacity-40"
+      ~ )
+      if sending
+        | …
+      else
+        | Send

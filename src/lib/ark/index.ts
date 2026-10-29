@@ -33,6 +33,57 @@ export const arkModels = {
 
 export type ArkModel = keyof typeof arkModels
 
+export const arkAgentModels = {
+  seed21Turbo: 'dola-seed-2-1-turbo-260628'
+} as const
+
+export type ArkAgentModel = keyof typeof arkAgentModels
+
+export const ArkAgentMessageSchema = Schema.Struct({
+  role: Schema.Literals(['user', 'assistant']),
+  content: Schema.String
+})
+export type ArkAgentMessage = typeof ArkAgentMessageSchema.Type
+
+const ChatCompletionResponse = Schema.Struct({
+  choices: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        message: Schema.optionalKey(Schema.Struct({ content: Schema.optionalKey(Schema.String) }))
+      })
+    )
+  ),
+  error: Schema.optionalKey(Schema.Struct({ message: Schema.optionalKey(Schema.String) }))
+})
+
+/** Send a conversational turn to the configured Ark agent model. */
+export const generateArkChat = (messages: readonly ArkAgentMessage[]) =>
+  Effect.gen(function* () {
+    const model = arkAgentModels.seed21Turbo
+    const res = yield* arkRequest('POST', '/chat/completions', {
+      model,
+      messages: [
+        {
+          role: 'system',
+          content:
+            'You are Hyperflower Agent, a creative assistant for making images, videos, and 3D assets. Help users explore ideas and write strong generation prompts. Be concise and practical. Never claim to have generated media or performed actions.'
+        },
+        ...messages
+      ]
+    })
+    const json = decodeBody(ChatCompletionResponse, res.body)
+    const content = json?.choices?.[0]?.message?.content
+    if (!res.ok || !content) {
+      const reason = json?.error?.message
+      return yield* new ArkError({
+        message: `Ark ${model} failed with ${res.status}${reason ? `: ${reason}` : ''}`,
+        httpStatus: res.status,
+        body: res.body
+      })
+    }
+    return content
+  })
+
 /** A model paired with its matching input, e.g. for task payloads. */
 export const ArkRequest = Schema.Union([
   Schema.Struct({ model: Schema.Literal('seedream5Pro'), input: SeedreamInput }),

@@ -10,6 +10,7 @@ import { runs, tasks } from '@trigger.dev/sdk'
 import { Cause, Config, Effect, Layer, ManagedRuntime, Schema, Stream, Tuple } from 'effect'
 import {
   ArkError,
+  ArkAgentMessageSchema,
   ArkRequest,
   ArkVideoRequest,
   Ark3DRequest,
@@ -17,6 +18,7 @@ import {
   arkModels,
   arkVideoModels,
   generateArkImage,
+  generateArkChat,
   generateArkVideo,
   generateArk3D
 } from '../lib/ark'
@@ -90,6 +92,23 @@ const decodeGenerateRequest = (body: string) =>
     Effect.flatMap(Schema.decodeUnknownEffect(GenerateRequest)),
     Effect.mapError((error) => new BadRequest({ message: error.message }))
   )
+
+const AgentRequest = Schema.Struct({ messages: Schema.Array(ArkAgentMessageSchema) })
+const decodeAgentRequest = (body: string) =>
+  Schema.decodeUnknownEffect(Schema.fromJsonString(AgentRequest))(body).pipe(
+    Effect.mapError((error) => new BadRequest({ message: error.message }))
+  )
+
+const agent = Effect.fn('api.agent')(function* (req: IncomingMessage) {
+  const body = yield* readBody(req)
+  const { messages } = yield* decodeAgentRequest(body)
+  if (!messages.length) return yield* new BadRequest({ message: 'Send a message to start the conversation.' })
+  if (messages.length > 40) return yield* new BadRequest({ message: 'This conversation is too long. Start a new one.' })
+  if (messages.some((message) => message.content.length > 12_000)) {
+    return yield* new BadRequest({ message: 'Each message must be 12,000 characters or fewer.' })
+  }
+  return { status: 200, body: { message: yield* generateArkChat(messages) } } satisfies Reply
+})
 
 const readBody = (req: IncomingMessage) =>
   Effect.tryPromise({
@@ -269,6 +288,8 @@ export async function apiMiddleware(req: IncomingMessage, res: ServerResponse, n
   const route =
     req.method === 'POST' && url.pathname === '/api/generate'
       ? reply(res, generate(req))
+      : req.method === 'POST' && url.pathname === '/api/agent'
+        ? reply(res, agent(req))
       : req.method === 'GET' && url.pathname === '/api/usage/neurons'
         ? reply(res, usage)
         : req.method === 'GET' && url.pathname === '/api/files'
