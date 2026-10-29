@@ -306,10 +306,10 @@ main(class="flex min-h-dvh bg-background text-foreground")
                   ~ ) Remove
             if photos.length < maxPhotos
               label(
-                ~ class="flex size-20 cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border border-dashed
-                ~ border-line text-xs text-muted-foreground transition-colors hover:text-foreground focus-within:text-foreground"
+                ~ class="flex size-20 cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border border-dashed bg-border/30
+                ~ border-line text-xs text-muted-foreground/50 transition-colors hover:text-foreground focus-within:text-foreground"
                 ~ )
-                Icon(name='plus' size={10})
+                Icon(name='plus' size={12})
                 span #{views3d[photos.length]}
                 input(class="sr-only" type="file" accept="image/*" multiple onChange={addPhotos})
       else
@@ -325,7 +325,7 @@ main(class="flex min-h-dvh bg-background text-foreground")
 
       if showImageUrl
         input(
-          ~ class="field"
+          ~ className="field rounded-sm! bg-background!"
           ~ type="url"
           ~ aria-label="Image URL"
           ~ placeholder={video.image === 'required'
@@ -418,10 +418,10 @@ main(class="flex min-h-dvh bg-background text-foreground")
 
           button(
             ~ type="submit"
-            ~ class="inline-flex h-9 items-center rounded-full bg-primary px-4 text-sm text-primary-foreground
+            ~ class="inline-flex h-9 items-center rounded-full text-primary px-4 text-sm
             ~ transition hover:opacity-85 active:scale-[0.98]"
             ~ )
-            Icon(name='enter' size={14})
+            Icon(name='enter' size={16})
 
 
     if errors.length

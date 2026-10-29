@@ -27,7 +27,7 @@ export const imageOptions: {
   // { id: 'soulv2', label: 'Soul V2', aspect: true, resolution: true },
   // { id: 'soul', label: 'Soul', aspect: true, resolution: true },
   // { id: 'soulcinema', label: 'Soul Cinema', aspect: true, resolution: true },
-  { id: 'fluxSchnell', label: 'FLUX 1', aspect: false, resolution: false, inline: true },
+  { id: 'fluxSchnell', label: 'FLUX 1', aspect: false, resolution: false, inline: true }
   // { id: 'seedream5Pro', label: 'Seedream 5 Pro', aspect: true, resolution: false, references: 10, inline: true },
   // { id: 'seedream5Flash', label: 'Seedream 5 Flash', aspect: true, resolution: false, references: 10, inline: true },
   // { id: 'flux2Klein', label: 'FLUX 2', aspect: true, resolution: false, references: 4, inline: true },
@@ -81,17 +81,17 @@ export const model3dOptions: {
 
 /** Hitem3D reads its reference photos in this order. */
 export const views3d = ['Front', 'Back', 'Left', 'Right']
-export const resolutions3d = ['1536', '1536pro'] as const
+export const resolutions3d = ['1536'] as const // , '1536pro'
 export type Resolution3D = (typeof resolutions3d)[number]
-export const formats3d: Model3DFormat[] = ['glb', 'obj', 'fbx', 'usdz', 'stl']
+export const formats3d: Model3DFormat[] = ['glb'] // , 'obj', 'fbx', 'usdz', 'stl'
 
 export const aspectRatios: Record<Exclude<Mode, '3d'>, string[]> = {
   image: ['1:1', '3:4', '9:16', '16:9'],
   video: ['16:9', '9:16', '1:1']
 }
 
-export const resolutions: Resolution[] = ['720p', '1080p']
-export const durations: Duration[] = [5, 10]
+export const resolutions: Resolution[] = ['720p'] // , '1080p'
+export const durations: Duration[] = [5] // , 10
 
 export type Settings = {
   mode: Mode
@@ -132,7 +132,11 @@ export function buildRequest(s: Settings): GenerateRequest | string {
     }
     if (s.imageModel === 'seedream5Pro' || s.imageModel === 'seedream5Flash') {
       const size = seedreamSizes[s.aspect] ?? seedreamSizes['1:1']
-      return { kind: 'image', model: s.imageModel, input: { prompt, size, ...(s.references.length && { image: s.references }) } }
+      return {
+        kind: 'image',
+        model: s.imageModel,
+        input: { prompt, size, ...(s.references.length && { image: s.references }) }
+      }
     }
     const input = { prompt, aspect_ratio: s.aspect as never, resolution: s.resolution }
     return { kind: 'image', model: s.imageModel, input } as GenerateRequest
@@ -223,10 +227,7 @@ export type Job = {
 
 /** Background runs return a runId to follow; fast providers return the images directly. */
 export type GenerationStart =
-  | { runId: string }
-  | { images: string[]; neurons?: number }
-  | { video: string }
-  | { model3d: Model3D }
+  { runId: string } | { images: string[]; neurons?: number } | { video: string } | { model3d: Model3D }
 
 export async function startGeneration(request: GenerateRequest): Promise<GenerationStart> {
   const res = await fetch('/api/generate', {
@@ -264,7 +265,11 @@ export const formatNeurons = (value: number) =>
  * Downscale an uploaded image as a data URL: JPEG at 512px by default (FLUX.2 caps references at
  * 512×512); 3D references use PNG, which keeps a cut-out object's transparent background.
  */
-export async function toReferenceImage(file: File, maxSide = 512, type: 'image/jpeg' | 'image/png' = 'image/jpeg'): Promise<string> {
+export async function toReferenceImage(
+  file: File,
+  maxSide = 512,
+  type: 'image/jpeg' | 'image/png' = 'image/jpeg'
+): Promise<string> {
   const bitmap = await createImageBitmap(file)
   const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height))
   const canvas = document.createElement('canvas')
